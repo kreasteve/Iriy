@@ -111,5 +111,21 @@
         "mm": { "name": "Menge (mm)", "description": "Ausgebrachte Wassermenge in Millimetern." }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "et0_daily": { "name": "ET0 (Tag)" },
+      "et0_today": { "name": "ET0 heute" },
+      "et0_rate": { "name": "ET0-Rate" }
+    }
+  },
+  "selector": {
+    "rain_mode": {
+      "options": {
+        "cumulative_daily": "Zähler (Reset täglich)",
+        "incremental": "Inkrementell (mm je Meldung)",
+        "rate": "Rate (mm/h)"
+      }
+    }
   }
 }

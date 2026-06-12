@@ -218,6 +218,9 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self.et0_today = 0.0
         self.et0_rate: float | None = None
         self._last_tick: datetime | None = None
+        # Datum, zu dem die Tages-Akkumulatoren gehoeren (lokale ISO-Datum).
+        # Dient dem Tageswechsel-Abgleich beim Laden nach einem Neustart.
+        self._current_day: str | None = None
 
         # Zonen
         self.zones: dict[str, ZoneState] = {}
@@ -251,6 +254,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     async def async_setup(self) -> None:
         """Persistenz laden, Listener registrieren, ersten Refresh ausloesen."""
         await self._async_load()
+        if self._current_day is None:
+            self._current_day = dt_util.now().date().isoformat()
 
         watched = [eid for eid in self._src.values() if eid]
         if watched:
@@ -326,12 +331,18 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             # hier nur den Mittelwert ueber das Intervall sammeln.
             self._rain_rate_iv.add(value)
             return
-        # Zaehler-Modi: incremental (Sensor liefert mm seit letztem Reset)
+        if self._rain_mode == "incremental":
+            # Sensor liefert pro Meldung den Zuwachs dieses Zeitraums direkt.
+            inc = max(value, 0.0)
+            self._rain_iv += inc
+            self._rain_day += inc
+            return
+        # "cumulative_daily": monoton steigender Zaehler (Reset z. B. Mitternacht).
         if self._rain_last is None:
             self._rain_last = value
             return
         delta = value - self._rain_last
-        if delta < 0:  # Zaehler-Reset (Mitternacht o. Event) erkannt
+        if delta < 0:  # Zaehler-Reset erkannt -> neuer Stand ist der Zuwachs
             delta = max(value, 0.0)
         self._rain_last = value
         self._rain_iv += delta
@@ -341,15 +352,23 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     async def _async_update_data(self) -> IriyData:
         now = dt_util.utcnow()
-        if self._rain_mode == "rate" and self._last_tick is not None:
-            if self._rain_rate_iv.mean is not None:
+        if self._rain_mode == "rate" and self._rain_rate_iv.mean is not None:
+            # Auch das erste Fenster nach (Neu-)Start zaehlen: dann fehlt
+            # _last_tick, also das konfigurierte Intervall als Dauer annehmen.
+            if self._last_tick is not None:
                 hours = (now - self._last_tick).total_seconds() / 3600.0
-                add = max(self._rain_rate_iv.mean, 0.0) * hours
-                self._rain_iv += add
-                self._rain_day += add
+            else:
+                hours = self.update_interval.total_seconds() / 3600.0
+            add = max(self._rain_rate_iv.mean, 0.0) * hours
+            self._rain_iv += add
+            self._rain_day += add
 
         if self._hourly and self._last_tick is not None:
             self._integrate_interval(self._last_tick, now)
+        elif self._hourly:
+            # Erstes Fenster ohne ET-Integration: gemessenen Regen trotzdem
+            # sofort auf die Buckets anwenden (sonst geht er verloren).
+            self._apply_to_zones(0.0, self._rain_iv)
 
         self._last_tick = now
         self._reset_interval()
@@ -357,41 +376,49 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         return self._snapshot()
 
     def _integrate_interval(self, start: datetime, end: datetime) -> None:
-        """ET0 ueber [start, end] rechnen, aufsummieren, Buckets fuettern."""
+        """ET0 ueber [start, end] rechnen, aufsummieren, Buckets fuettern.
+
+        Wichtig: der im Intervall gemessene Regen wird IMMER auf die Buckets
+        angewandt – auch wenn ET wegen kurzzeitig fehlender Sensordaten nicht
+        berechnet werden kann. Sonst wuerde Regen verschluckt und Iriy
+        empfaehle Bewaesserung trotz gefallenen Regens.
+        """
         period_h = (end - start).total_seconds() / 3600.0
         if period_h <= 0:
             return
+
+        et0_iv = 0.0
         t = self._iv["temp"].mean
         rh = self._iv["rh"].mean
         wind = self._iv["wind"].mean
         solar = self._iv["solar"].mean
-        if None in (t, rh, wind, solar):
-            return  # zu wenig Daten in diesem Intervall
-        pressure = self._pressure_kpa()
+        if None not in (t, rh, wind, solar):
+            mid = dt_util.utc_from_timestamp(
+                (start.timestamp() + end.timestamp()) / 2.0
+            )
+            utc_hour_mid = mid.hour + mid.minute / 60.0 + mid.second / 3600.0
+            doy = mid.timetuple().tm_yday
+            et0_iv = max(
+                et.et0_hourly(
+                    t_air=t,
+                    rh=rh,
+                    wind_ms=wind,
+                    solar_w_m2=solar,
+                    pressure_kpa=self._pressure_kpa(),
+                    latitude_deg=self._lat,
+                    longitude_east_deg=self._lon,
+                    elevation_m=self._elev,
+                    day_of_year=doy,
+                    utc_hour_mid=utc_hour_mid,
+                    period_hours=period_h,
+                    wind_sensor_height_m=self._wind_h,
+                ),
+                0.0,  # Taubildung (negativ) zaehlt nicht als Verlust
+            )
+            self.et0_today += et0_iv
+            self.et0_rate = round(et0_iv / period_h, 3) if period_h else None
 
-        mid = dt_util.utc_from_timestamp(
-            (start.timestamp() + end.timestamp()) / 2.0
-        )
-        utc_hour_mid = mid.hour + mid.minute / 60.0 + mid.second / 3600.0
-        doy = mid.timetuple().tm_yday
-
-        et0_iv = et.et0_hourly(
-            t_air=t,
-            rh=rh,
-            wind_ms=wind,
-            solar_w_m2=solar,
-            pressure_kpa=pressure,
-            latitude_deg=self._lat,
-            longitude_east_deg=self._lon,
-            elevation_m=self._elev,
-            day_of_year=doy,
-            utc_hour_mid=utc_hour_mid,
-            period_hours=period_h,
-            wind_sensor_height_m=self._wind_h,
-        )
-        et0_iv = max(et0_iv, 0.0)  # Taubildung (negativ) zaehlt nicht als Verlust
-        self.et0_today += et0_iv
-        self.et0_rate = round(et0_iv / period_h, 3) if period_h else None
+        # Regen IMMER verrechnen (ET-Term ist 0, falls Daten fehlten).
         self._apply_to_zones(et0_iv, self._rain_iv)
 
     def _apply_to_zones(self, et0_mm: float, rain_mm: float) -> None:
@@ -421,6 +448,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._rain_day = 0.0
         for zone in self.zones.values():
             zone.etc_today = 0.0
+        self._current_day = now.date().isoformat()
         self.hass.async_create_task(self._async_save())
         self.async_set_updated_data(self._snapshot())
         _LOGGER.debug("Iriy: Tag abgeschlossen, ET0=%s mm", self.et0_daily)
@@ -512,27 +540,57 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         data = await self._store.async_load()
         if not data:
             return
+
+        # Langlebiger Zustand wird IMMER wiederhergestellt (ueberlebt Tageswechsel):
         self.et0_daily = data.get("et0_daily")
-        self.et0_today = data.get("et0_today", 0.0)
-        self.et0_rate = data.get("et0_rate")
         self._rain_last = data.get("rain_last")
-        self._rain_day = data.get("rain_day", 0.0)
-        for key, acc in self._day.items():
-            acc.load((data.get("day_acc") or {}).get(key))
-        for name, deficit in (data.get("zones") or {}).items():
-            if name in self.zones:
-                self.zones[name].deficit = float(deficit)
+        for name, zd in (data.get("zones") or {}).items():
+            zone = self.zones.get(name)
+            if zone is None:
+                continue
+            if isinstance(zd, dict):
+                zone.deficit = float(zd.get("deficit", 0.0))
+                zone.etc_today = float(zd.get("etc_today", 0.0))
+            else:  # altes Format: nur Defizit als Zahl
+                zone.deficit = float(zd)
+
+        stored_day = data.get("day")
+        today = dt_util.now().date().isoformat()
+        if stored_day == today:
+            # Gleicher Tag: Tages-Akkumulatoren weiterfuehren.
+            self.et0_today = data.get("et0_today", 0.0)
+            self.et0_rate = data.get("et0_rate")
+            self._rain_day = data.get("rain_day", 0.0)
+            for key, acc in self._day.items():
+                acc.load((data.get("day_acc") or {}).get(key))
+            self._current_day = stored_day
+        else:
+            # HA war ueber Mitternacht aus: Tages-Akkumulatoren NICHT
+            # weiterzaehlen (sonst leckt der Vortag in den neuen Tag). Der
+            # langlebige et0_daily/Defizit bleibt als letzter bekannter Stand.
+            self.et0_today = 0.0
+            self.et0_rate = None
+            self._rain_day = 0.0
+            for acc in self._day.values():
+                acc.reset()
+            for zone in self.zones.values():
+                zone.etc_today = 0.0
+            self._current_day = today
 
     async def _async_save(self) -> None:
         await self._store.async_save(
             {
+                "day": self._current_day,
                 "et0_daily": self.et0_daily,
                 "et0_today": self.et0_today,
                 "et0_rate": self.et0_rate,
                 "rain_last": self._rain_last,
                 "rain_day": self._rain_day,
                 "day_acc": {k: a.as_dict() for k, a in self._day.items()},
-                "zones": {n: z.deficit for n, z in self.zones.items()},
+                "zones": {
+                    n: {"deficit": z.deficit, "etc_today": z.etc_today}
+                    for n, z in self.zones.items()
+                },
             }
         )
 

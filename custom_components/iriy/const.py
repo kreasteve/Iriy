@@ -5,8 +5,6 @@ Konfiguration kommt aus dem Config-Flow (UI) und liegt im ConfigEntry.
 """
 from __future__ import annotations
 
-from datetime import timedelta
-
 DOMAIN = "iriy"
 PLATFORMS = ["sensor"]
 
@@ -61,8 +59,6 @@ DEFAULT_EFFICIENCY = 0.9
 # Storage
 STORAGE_VERSION = 1
 STORAGE_KEY = DOMAIN  # je Entry wird ".{entry_id}" angehaengt
-
-SCAN_INTERVAL = timedelta(minutes=DEFAULT_UPDATE_MINUTES)
 
 # --- Referenz-Kc-Tabelle (etablierte Pflanzen, Hauptsaison) ------------
 # Nur Vorschlagswerte fuer die UI; die echten Kc stehen pro Zone im Entry.

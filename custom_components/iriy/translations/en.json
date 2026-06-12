@@ -111,5 +111,21 @@
         "mm": { "name": "Amount (mm)", "description": "Applied water in millimetres." }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "et0_daily": { "name": "ET0 (daily)" },
+      "et0_today": { "name": "ET0 today" },
+      "et0_rate": { "name": "ET0 rate" }
+    }
+  },
+  "selector": {
+    "rain_mode": {
+      "options": {
+        "cumulative_daily": "Cumulative counter (resets daily)",
+        "incremental": "Incremental (mm per report)",
+        "rate": "Rate (mm/h)"
+      }
+    }
   }
 }

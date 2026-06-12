@@ -73,21 +73,29 @@ def _num(minimum: float, maximum: float, step: float, unit: str | None = None):
     )
 
 
-def _select(options: list[str]):
+def _select(options: list[str], translation_key: str | None = None):
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=options, mode=selector.SelectSelectorMode.DROPDOWN
+            options=options,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+            translation_key=translation_key,
         )
     )
 
 
 def _settings_schema(defaults: dict) -> vol.Schema:
-    """Gemeinsames Schema fuer Erststart und Options-Einstellungen."""
+    """Gemeinsames Schema fuer Erststart und Options-Einstellungen.
+
+    Entity-Felder tragen bewusst KEIN voluptuous-default (ein leeres
+    optionales Feld muss leer bleiben duerfen). Vorbelegung beim Bearbeiten
+    laeuft ueber add_suggested_values_to_schema im jeweiligen Step.
+    Zahlen/Einheiten/Boolean haben statische Defaults (nie None).
+    """
     return vol.Schema(
         {
-            vol.Required(CONF_TEMP, default=defaults.get(CONF_TEMP)): _SENSOR,
-            vol.Required(CONF_HUMIDITY, default=defaults.get(CONF_HUMIDITY)): _SENSOR,
-            vol.Required(CONF_WIND, default=defaults.get(CONF_WIND)): _SENSOR,
+            vol.Required(CONF_TEMP): _SENSOR,
+            vol.Required(CONF_HUMIDITY): _SENSOR,
+            vol.Required(CONF_WIND): _SENSOR,
             vol.Required(
                 CONF_WIND_UNIT, default=defaults.get(CONF_WIND_UNIT, DEFAULT_WIND_UNIT)
             ): _select(["km/h", "m/s"]),
@@ -95,17 +103,17 @@ def _settings_schema(defaults: dict) -> vol.Schema:
                 CONF_WIND_HEIGHT,
                 default=defaults.get(CONF_WIND_HEIGHT, DEFAULT_WIND_HEIGHT),
             ): _num(0.5, 50, 0.5, "m"),
-            vol.Required(CONF_SOLAR, default=defaults.get(CONF_SOLAR)): _SENSOR,
-            vol.Optional(CONF_PRESSURE, default=defaults.get(CONF_PRESSURE)): _SENSOR,
+            vol.Required(CONF_SOLAR): _SENSOR,
+            vol.Optional(CONF_PRESSURE): _SENSOR,
             vol.Required(
                 CONF_PRESSURE_UNIT,
                 default=defaults.get(CONF_PRESSURE_UNIT, DEFAULT_PRESSURE_UNIT),
             ): _select(["hPa", "kPa"]),
-            vol.Optional(CONF_RAIN, default=defaults.get(CONF_RAIN)): _SENSOR,
+            vol.Optional(CONF_RAIN): _SENSOR,
             vol.Required(
                 CONF_RAIN_MODE,
                 default=defaults.get(CONF_RAIN_MODE, DEFAULT_RAIN_MODE),
-            ): _select(["cumulative_daily", "incremental", "rate"]),
+            ): _select(["cumulative_daily", "incremental", "rate"], "rain_mode"),
             vol.Required(
                 CONF_LATITUDE, default=defaults.get(CONF_LATITUDE)
             ): _num(-90, 90, 0.0001, "°"),
@@ -219,9 +227,11 @@ class IriyOptionsFlow(OptionsFlow):
             merged = {**self._entry.options, **user_input}
             merged[CONF_ZONES] = self._zones()
             return self._save(merged)
-        return self.async_show_form(
-            step_id="settings", data_schema=_settings_schema(self._merged())
+        # Aktuelle Werte (inkl. optionaler Sensoren) als Vorbelegung einspielen.
+        schema = self.add_suggested_values_to_schema(
+            _settings_schema(self._merged()), self._merged()
         )
+        return self.async_show_form(step_id="settings", data_schema=schema)
 
     # --- Zone hinzufuegen ----------------------------------------------
 

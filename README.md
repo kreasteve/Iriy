@@ -30,11 +30,11 @@ muss – und steuert das später automatisch (Ventile, Strategien).
 
 | Entität | Bedeutung |
 |---|---|
-| `sensor.iriy_et0` | kanonischer ET₀-Tageswert [mm/Tag] (+ Diagnose-Attribute) |
+| `sensor.iriy_et0_daily` | kanonischer ET₀-Tageswert [mm/Tag] (+ Diagnose-Attribute) |
 | `sensor.iriy_et0_today` | heute bisher aufsummiert [mm] |
 | `sensor.iriy_et0_rate` | aktuelle ET-Rate [mm/h] |
-| `sensor.iriy_<zone>_deficit` | Wasserdefizit der Zone [mm] |
-| `sensor.iriy_<zone>_runtime` | nötige Bewässerungszeit [min] |
+| `sensor.iriy_<zone>_defizit` | Wasserdefizit der Zone [mm] |
+| `sensor.iriy_<zone>_laufzeit` | nötige Bewässerungszeit [min] |
 
 ---
 

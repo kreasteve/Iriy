@@ -1,13 +1,13 @@
 """Iriy-Sensoren.
 
-Globale Entities:
-  * sensor.iriy_et0          – kanonischer ET0-Tageswert [mm/Tag]
+Globale Entities (stabile IDs via translation_key):
+  * sensor.iriy_et0_daily    – kanonischer ET0-Tageswert [mm/Tag]
   * sensor.iriy_et0_today    – heute bisher aufsummiert [mm] (sub-taeglich)
   * sensor.iriy_et0_rate     – aktuelle ET-Rate [mm/h]
 
-Pro Zone:
-  * sensor.iriy_<zone>_deficit  – Wasserdefizit [mm]
-  * sensor.iriy_<zone>_runtime  – noetige Bewaesserungszeit [min]
+Pro Zone (ID aus dem deutschen Anzeigenamen):
+  * sensor.iriy_<zone>_defizit   – Wasserdefizit [mm]
+  * sensor.iriy_<zone>_laufzeit  – noetige Bewaesserungszeit [min]
 """
 from __future__ import annotations
 
@@ -35,16 +35,16 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = [
         IriyValueSensor(
-            coordinator, entry, "et0", "ET0 (Tag)", "mm", "mdi:water-percent",
-            lambda d: d.et0_daily, _et0_attrs,
+            coordinator, entry, "et0_daily", "mm", "mdi:water-percent",
+            lambda d: d.et0_daily, _et0_attrs, SensorStateClass.MEASUREMENT,
         ),
         IriyValueSensor(
-            coordinator, entry, "et0_today", "ET0 heute", "mm", "mdi:counter",
-            lambda d: d.et0_today, None,
+            coordinator, entry, "et0_today", "mm", "mdi:counter",
+            lambda d: d.et0_today, None, SensorStateClass.TOTAL_INCREASING,
         ),
         IriyValueSensor(
-            coordinator, entry, "et0_rate", "ET0-Rate", "mm/h", "mdi:speedometer",
-            lambda d: d.et0_rate, None,
+            coordinator, entry, "et0_rate", "mm/h", "mdi:speedometer",
+            lambda d: d.et0_rate, None, SensorStateClass.MEASUREMENT,
         ),
     ]
     for name in coordinator.zones:
@@ -79,27 +79,30 @@ class _IriyBase(CoordinatorEntity[IriyCoordinator], SensorEntity):
 
 
 class IriyValueSensor(_IriyBase):
-    """Generischer Sensor, der einen Wert aus IriyData liest."""
+    """Generischer Sensor, der einen Wert aus IriyData liest.
 
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    Name kommt ueber translation_key aus den Uebersetzungen; daraus leitet
+    HA auch die stabile entity_id ab (sensor.iriy_<key>).
+    """
 
     def __init__(
         self,
         coordinator: IriyCoordinator,
         entry: ConfigEntry,
         key: str,
-        name: str,
         unit: str,
         icon: str,
         getter: Callable[[IriyData], float | None],
         attr_getter: Callable[[IriyData], dict] | None,
+        state_class: SensorStateClass,
     ) -> None:
         super().__init__(coordinator, entry)
         self._getter = getter
         self._attr_getter = attr_getter
-        self._attr_name = name
+        self._attr_translation_key = key
         self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
+        self._attr_state_class = state_class
         self._attr_unique_id = f"{entry.entry_id}_{key}"
 
     @property
