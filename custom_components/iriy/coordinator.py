@@ -221,6 +221,9 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # Datum, zu dem die Tages-Akkumulatoren gehoeren (lokale ISO-Datum).
         # Dient dem Tageswechsel-Abgleich beim Laden nach einem Neustart.
         self._current_day: str | None = None
+        # True, wenn beim Setup schon persistierter Zustand vorlag -> dann
+        # KEIN automatischer Backfill (wuerde doppelt zaehlen).
+        self._loaded_existing = False
 
         # Zonen
         self.zones: dict[str, ZoneState] = {}
@@ -275,6 +278,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 self.hass, self._handle_midnight, hour=0, minute=0, second=5
             )
         )
+        # Frische Einrichtung: Tagesbilanz aus der Recorder-History aufbauen,
+        # damit sofort sinnvolle Werte da sind statt erst ab morgen.
+        if not self._loaded_existing:
+            await self._async_backfill()
         await self.async_config_entry_first_refresh()
 
     async def async_shutdown(self) -> None:
@@ -283,6 +290,189 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._unsubs.clear()
         await self._async_save()
         await super().async_shutdown()
+
+    # --- Backfill aus Recorder-History ----------------------------------
+
+    async def async_backfill(self) -> None:
+        """Service: heutige Spuren verwerfen und aus der History neu aufbauen."""
+        for acc in self._day.values():
+            acc.reset()
+        self.et0_today = 0.0
+        self.et0_rate = None
+        self._rain_day = 0.0
+        for zone in self.zones.values():
+            zone.etc_today = 0.0
+        await self._async_backfill()
+        self.async_set_updated_data(self._snapshot())
+
+    async def _async_backfill(self) -> None:
+        """Tagesbilanz aus der Recorder-History rekonstruieren (Warmstart).
+
+        Setzt et0_daily auf den gestrigen Volltag und fuellt die heutigen
+        Akkumulatoren + et0_today + Zonen-Defizit aus den schon vorhandenen
+        Sensordaten – damit Iriy sofort sinnvolle Werte zeigt.
+        """
+        if "recorder" not in self.hass.config.components:
+            _LOGGER.warning("Iriy: Recorder nicht aktiv – Backfill uebersprungen")
+            return
+        try:
+            from homeassistant.components.recorder import get_instance, history
+        except ImportError:
+            return
+
+        now = dt_util.utcnow()
+        today0 = dt_util.start_of_local_day()
+        start = today0 - timedelta(days=1)
+        ids = [e for e in self._src.values() if e]
+        if not ids:
+            return
+        try:
+            raw = await get_instance(self.hass).async_add_executor_job(
+                history.get_significant_states,
+                self.hass, start, now, ids, None, True, False, False, True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Iriy: Backfill-History fehlgeschlagen: %s", err)
+            return
+
+        # Messreihen je Groesse aufbauen (Einheiten-Umrechnung wie im Live-Pfad)
+        series: dict[str, list[tuple[float, float]]] = {}
+        keymap = {
+            "temp": CONF_TEMP,
+            "rh": CONF_HUMIDITY,
+            "wind": CONF_WIND,
+            "solar": CONF_SOLAR,
+            "pressure": CONF_PRESSURE,
+        }
+        for key, conf_key in keymap.items():
+            eid = self._src.get(conf_key)
+            pts: list[tuple[float, float]] = []
+            for stt in (raw.get(eid, []) if eid else []):
+                try:
+                    val = float(stt.state)
+                except (ValueError, TypeError):
+                    continue
+                if key == "wind" and self._wind_unit == "km/h":
+                    val /= 3.6
+                elif key == "pressure" and self._pressure_unit == "hPa":
+                    val /= 10.0
+                pts.append((stt.last_updated.timestamp(), val))
+            pts.sort()
+            series[key] = pts
+
+        def mean_win(key: str, t0: float, t1: float) -> float | None:
+            pts = series.get(key, [])
+            vals = [v for ts, v in pts if t0 <= ts < t1]
+            if vals:
+                return sum(vals) / len(vals)
+            prev = [v for ts, v in pts if ts < t1]  # Carry-forward
+            return prev[-1] if prev else None
+
+        def pressure_at(t1: float) -> float:
+            prev = [v for ts, v in series.get("pressure", []) if ts <= t1]
+            return prev[-1] if prev else et.atmospheric_pressure(self._elev)
+
+        t0 = today0.timestamp()
+        tn = now.timestamp()
+        y0 = start.timestamp()
+
+        # 1) Gestern: kanonischer Tageswert
+        yt = [v for ts, v in series["temp"] if y0 <= ts < t0]
+        yrh = mean_win("rh", y0, t0)
+        ywind = mean_win("wind", y0, t0)
+        ysolar = mean_win("solar", y0, t0)
+        if yt and None not in (yrh, ywind, ysolar):
+            doy_y = (today0 - timedelta(days=1)).timetuple().tm_yday
+            try:
+                self.et0_daily = round(
+                    et.et0_daily(
+                        t_min=min(yt),
+                        t_max=max(yt),
+                        rh_mean=yrh,
+                        wind_ms=ywind,
+                        solar_w_m2=ysolar,
+                        pressure_kpa=pressure_at(t0),
+                        latitude_deg=self._lat,
+                        elevation_m=self._elev,
+                        day_of_year=doy_y,
+                        wind_sensor_height_m=self._wind_h,
+                    ),
+                    2,
+                )
+            except (ValueError, ZeroDivisionError):
+                pass
+
+        # 2) Heute: Tages-Akkumulatoren fuellen (fuer Provisorisch + Mitternacht)
+        for key in ("temp", "rh", "wind", "solar", "pressure"):
+            for ts, val in series[key]:
+                if ts >= t0:
+                    self._day[key].add(val)
+
+        # 3) Heute: stuendliche ET0 aufsummieren
+        self.et0_today = 0.0
+        h = t0
+        while h < tn:
+            he = min(h + 3600.0, tn)
+            tm = mean_win("temp", h, he)
+            rh = mean_win("rh", h, he)
+            wind = mean_win("wind", h, he)
+            solar = mean_win("solar", h, he)
+            if None not in (tm, rh, wind, solar):
+                mid = dt_util.utc_from_timestamp((h + he) / 2.0)
+                try:
+                    et0_h = et.et0_hourly(
+                        t_air=tm,
+                        rh=rh,
+                        wind_ms=wind,
+                        solar_w_m2=solar,
+                        pressure_kpa=pressure_at(he),
+                        latitude_deg=self._lat,
+                        longitude_east_deg=self._lon,
+                        elevation_m=self._elev,
+                        day_of_year=mid.timetuple().tm_yday,
+                        utc_hour_mid=mid.hour + mid.minute / 60.0,
+                        period_hours=(he - h) / 3600.0,
+                        wind_sensor_height_m=self._wind_h,
+                    )
+                    self.et0_today += max(et0_h, 0.0)
+                except (ValueError, ZeroDivisionError):
+                    pass
+            h = he
+
+        # 4) Regen heute
+        rain_eid = self._src.get(CONF_RAIN)
+        if rain_eid:
+            rpts: list[tuple[float, float]] = []
+            for stt in raw.get(rain_eid, []):
+                try:
+                    rpts.append((stt.last_updated.timestamp(), float(stt.state)))
+                except (ValueError, TypeError):
+                    continue
+            rpts.sort()
+            today_r = [v for ts, v in rpts if ts >= t0]
+            if self._rain_mode == "incremental":
+                self._rain_day = sum(max(v, 0.0) for v in today_r)
+            elif self._rain_mode == "rate":
+                self._rain_day = 0.0  # Rate ist nicht rueckwirkend integrierbar
+            else:  # cumulative_daily: aktueller Tageszaehler
+                self._rain_day = today_r[-1] if today_r else 0.0
+                if rpts:
+                    self._rain_last = rpts[-1][1]
+
+        # 5) Zonen-Defizit aus der heutigen Bilanz
+        for zone in self.zones.values():
+            zone.etc_today = self.et0_today * zone.kc
+            zone.deficit = min(
+                max(zone.etc_today - self._rain_day, 0.0), zone.max_deficit
+            )
+
+        self._current_day = dt_util.now().date().isoformat()
+        await self._async_save()
+        _LOGGER.info(
+            "Iriy: Backfill – ET0 gestern=%s mm, heute bisher=%.2f mm",
+            self.et0_daily,
+            self.et0_today,
+        )
 
     # --- Quell-Updates --------------------------------------------------
 
@@ -540,6 +730,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         data = await self._store.async_load()
         if not data:
             return
+        self._loaded_existing = True
 
         # Langlebiger Zustand wird IMMER wiederhergestellt (ueberlebt Tageswechsel):
         self.et0_daily = data.get("et0_daily")

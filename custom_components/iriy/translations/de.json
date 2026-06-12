@@ -96,6 +96,10 @@
       "name": "Neu berechnen",
       "description": "Erzwingt eine sofortige Neuberechnung von ET0 und Defizit."
     },
+    "backfill": {
+      "name": "History nachladen",
+      "description": "Verwirft die heutige Bilanz und baut sie aus der Recorder-History neu auf (gestriger Tageswert + heutiger Verlauf seit Mitternacht)."
+    },
     "reset_bucket": {
       "name": "Defizit zurücksetzen",
       "description": "Setzt das Wasserdefizit auf 0.",

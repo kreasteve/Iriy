@@ -96,6 +96,10 @@
       "name": "Recalculate",
       "description": "Force an immediate recomputation of ET0 and deficit."
     },
+    "backfill": {
+      "name": "Backfill from history",
+      "description": "Discard today's balance and rebuild it from the recorder history (yesterday's daily value + today's course since midnight)."
+    },
     "reset_bucket": {
       "name": "Reset deficit",
       "description": "Reset the water deficit to 0.",

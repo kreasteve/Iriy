@@ -25,6 +25,7 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_RECALCULATE = "recalculate"
 SERVICE_RESET_BUCKET = "reset_bucket"
 SERVICE_ADD_WATER = "add_water"
+SERVICE_BACKFILL = "backfill"
 
 ATTR_ZONE = "zone"
 ATTR_MM = "mm"
@@ -91,6 +92,10 @@ def _register_services(hass: HomeAssistant) -> None:
         for coord in _coordinators(hass):
             coord.add_water(zone, mm)
 
+    async def _backfill(call: ServiceCall) -> None:
+        for coord in _coordinators(hass):
+            await coord.async_backfill()
+
     hass.services.async_register(
         DOMAIN, SERVICE_RECALCULATE, _recalculate
     )
@@ -100,8 +105,14 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_WATER, _add_water, schema=_ADD_WATER_SCHEMA
     )
+    hass.services.async_register(DOMAIN, SERVICE_BACKFILL, _backfill)
 
 
 def _unregister_services(hass: HomeAssistant) -> None:
-    for service in (SERVICE_RECALCULATE, SERVICE_RESET_BUCKET, SERVICE_ADD_WATER):
+    for service in (
+        SERVICE_RECALCULATE,
+        SERVICE_RESET_BUCKET,
+        SERVICE_ADD_WATER,
+        SERVICE_BACKFILL,
+    ):
         hass.services.async_remove(DOMAIN, service)
