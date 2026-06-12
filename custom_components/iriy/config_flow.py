@@ -62,25 +62,27 @@ _SENSOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")
 
 
 def _num(minimum: float, maximum: float, step: float, unit: str | None = None):
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=minimum,
-            max=maximum,
-            step=step,
-            mode=selector.NumberSelectorMode.BOX,
-            unit_of_measurement=unit,
-        )
+    # Optionale Config-Felder NUR setzen, wenn nicht None – HA validiert
+    # unit_of_measurement gegen cv.string, None wuerde eine Exception werfen.
+    config = selector.NumberSelectorConfig(
+        min=minimum,
+        max=maximum,
+        step=step,
+        mode=selector.NumberSelectorMode.BOX,
     )
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return selector.NumberSelector(config)
 
 
 def _select(options: list[str], translation_key: str | None = None):
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=options,
-            mode=selector.SelectSelectorMode.DROPDOWN,
-            translation_key=translation_key,
-        )
+    config = selector.SelectSelectorConfig(
+        options=options,
+        mode=selector.SelectSelectorMode.DROPDOWN,
     )
+    if translation_key is not None:
+        config["translation_key"] = translation_key
+    return selector.SelectSelector(config)
 
 
 def _settings_schema(defaults: dict) -> vol.Schema:
