@@ -40,11 +40,13 @@ CONF_ZONE_MAX_DEFICIT = "max_deficit"  # mm, Kappung des Buckets (RAW)
 CONF_ZONE_EFFICIENCY = "efficiency"   # 0..1
 CONF_ZONE_VALVE = "valve"             # optional: switch/valve-Entity (Zukunft)
 
-# --- Standardwerte (Grosshabersdorf) -----------------------------------
-DEFAULT_LATITUDE = 49.404
-DEFAULT_LONGITUDE = 10.78
-DEFAULT_ELEVATION = 373.0
-DEFAULT_WIND_HEIGHT = 13.0
+# --- Neutrale Fallback-Standardwerte -----------------------------------
+# Nur Rueckfall, falls der HA-Standort leer ist. Der echte Standort wird im
+# Config-Flow aus hass.config vorbelegt und dort eingestellt.
+DEFAULT_LATITUDE = 51.0
+DEFAULT_LONGITUDE = 10.0
+DEFAULT_ELEVATION = 0.0
+DEFAULT_WIND_HEIGHT = 10.0
 DEFAULT_WIND_UNIT = "km/h"
 DEFAULT_PRESSURE_UNIT = "hPa"
 DEFAULT_RAIN_MODE = "cumulative_daily"

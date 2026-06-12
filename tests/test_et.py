@@ -86,7 +86,7 @@ def test_fao_example18_brussels_daily():
     assert 3.5 < et0 < 4.3, f"ET0={et0}, erwartet ~3.9"
 
 
-def test_summer_day_grosshabersdorf_daily():
+def test_summer_day_central_europe_daily():
     et0 = et.et0_daily(
         t_min=14,
         t_max=27,

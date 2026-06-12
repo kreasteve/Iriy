@@ -143,3 +143,8 @@ pytest tests/ -v
 Aufgebaut auf einem vorhandenen FAO-56-Ansatz (`smart_et`) für die Ecowitt
 WS90 – Rechenkern erweitert (Stundengleichung), Architektur auf Config-Flow,
 Koordinator und Zonen-Bilanz umgestellt.
+
+## Lizenz
+
+[AGPL-3.0](LICENSE) – frei nutzbar und veränderbar; Änderungen, die als
+Netzwerkdienst betrieben werden, müssen ihren Quellcode offenlegen.
