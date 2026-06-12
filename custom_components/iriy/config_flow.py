@@ -61,7 +61,7 @@ from .const import (
 _SENSOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
 
 
-def _num(minimum: float, maximum: float, step: float, unit: str | None = None):
+def _num(minimum: float, maximum: float, step: float | str, unit: str | None = None):
     # Optionale Config-Felder NUR setzen, wenn nicht None – HA validiert
     # unit_of_measurement gegen cv.string, None wuerde eine Exception werfen.
     config = selector.NumberSelectorConfig(
@@ -118,10 +118,10 @@ def _settings_schema(defaults: dict) -> vol.Schema:
             ): _select(["cumulative_daily", "incremental", "rate"], "rain_mode"),
             vol.Required(
                 CONF_LATITUDE, default=defaults.get(CONF_LATITUDE)
-            ): _num(-90, 90, 0.0001, "°"),
+            ): _num(-90, 90, "any", "°"),
             vol.Required(
                 CONF_LONGITUDE, default=defaults.get(CONF_LONGITUDE)
-            ): _num(-180, 180, 0.0001, "°"),
+            ): _num(-180, 180, "any", "°"),
             vol.Required(
                 CONF_ELEVATION, default=defaults.get(CONF_ELEVATION)
             ): _num(-100, 5000, 1, "m"),
