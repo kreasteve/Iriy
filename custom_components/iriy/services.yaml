@@ -6,7 +6,20 @@ backfill:
   name: History nachladen
   description: >-
     Verwirft die heutige Bilanz und baut sie aus der Recorder-History neu auf
-    (gestriger Tageswert + heutiger Verlauf seit Mitternacht).
+    (gestriger Tageswert + heutiger Verlauf). Mit days > 0 werden zusaetzlich
+    vergangene Tage als ET0-Langzeitstatistik nachgetragen (soweit Daten da sind).
+  fields:
+    days:
+      name: Tage rueckwirkend
+      description: Wie viele vergangene Tage als ET0-Statistik nachtragen (0 = nur heute/gestern).
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 365
+          step: 1
+          unit_of_measurement: Tage
 
 reset_bucket:
   name: Defizit zuruecksetzen

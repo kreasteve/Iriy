@@ -98,7 +98,13 @@
     },
     "backfill": {
       "name": "History nachladen",
-      "description": "Verwirft die heutige Bilanz und baut sie aus der Recorder-History neu auf (gestriger Tageswert + heutiger Verlauf seit Mitternacht)."
+      "description": "Verwirft die heutige Bilanz und baut sie aus der Recorder-History neu auf (gestriger Tageswert + heutiger Verlauf). Mit Tage > 0 werden vergangene Tage als ET0-Langzeitstatistik nachgetragen (soweit Daten vorhanden).",
+      "fields": {
+        "days": {
+          "name": "Tage rückwirkend",
+          "description": "Wie viele vergangene Tage als ET0-Statistik nachtragen (0 = nur heute/gestern)."
+        }
+      }
     },
     "reset_bucket": {
       "name": "Defizit zurücksetzen",

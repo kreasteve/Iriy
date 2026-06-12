@@ -237,6 +237,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             return self.entry.options[key]
         return self.entry.data.get(key, default)
 
+    @property
+    def loaded_existing(self) -> bool:
+        """True, wenn beim Setup schon persistierter Zustand vorlag."""
+        return self._loaded_existing
+
     def _build_zones(self) -> None:
         existing = {n: z.deficit for n, z in self.zones.items()}
         self.zones = {}
@@ -473,6 +478,143 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             self.et0_daily,
             self.et0_today,
         )
+
+    async def async_import_history_statistics(self, days: int = 30) -> int:
+        """Vergangene Tage als ET0-Langzeitstatistik in den Tagessensor einspeisen.
+
+        Quelle ist die TAGES-Statistik der Wetterstation-Sensoren (mean/min/max
+        je Tag, geht weit zurueck) – daraus wird pro Tag ein ET0-Wert gerechnet
+        und per async_import_statistics in die Historie von sensor.iriy_et0_*
+        geschrieben. Nur ABGESCHLOSSENE Tage (vor heute), idempotent (Upsert).
+        """
+        if "recorder" not in self.hass.config.components:
+            return 0
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                async_import_statistics,
+                statistics_during_period,
+            )
+        except ImportError:
+            return 0
+        try:
+            from homeassistant.components.recorder.models import StatisticMeanType
+
+            mean_meta: dict = {"mean_type": StatisticMeanType.ARITHMETIC}
+        except ImportError:  # aeltere HA-Versionen
+            mean_meta = {"has_mean": True}
+
+        from homeassistant.helpers import entity_registry as er
+
+        reg = er.async_get(self.hass)
+        stat_id = reg.async_get_entity_id(
+            "sensor", DOMAIN, f"{self.entry.entry_id}_et0_daily"
+        )
+        if not stat_id:
+            _LOGGER.warning(
+                "Iriy: ET0-Tagessensor noch nicht registriert – Statistik-Backfill spaeter"
+            )
+            return 0
+
+        today0 = dt_util.start_of_local_day()
+        start = today0 - timedelta(days=max(1, int(days)))
+        roles = {
+            self._src.get(CONF_TEMP): "temp",
+            self._src.get(CONF_HUMIDITY): "rh",
+            self._src.get(CONF_WIND): "wind",
+            self._src.get(CONF_SOLAR): "solar",
+            self._src.get(CONF_PRESSURE): "pressure",
+        }
+        ids = {sid for sid in roles if sid}
+        if not ids:
+            return 0
+        try:
+            rows = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start,
+                today0,
+                ids,
+                "day",
+                None,
+                {"mean", "min", "max"},
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Iriy: Statistik-Lesen fehlgeschlagen: %s", err)
+            return 0
+
+        by_day: dict = {}
+        for sid, series in rows.items():
+            role = roles.get(sid)
+            if not role:
+                continue
+            for row in series:
+                ts = row.get("start")
+                if ts is None:
+                    continue
+                if ts > 1e12:  # ms -> s
+                    ts /= 1000.0
+                day = dt_util.as_local(dt_util.utc_from_timestamp(ts)).date()
+                by_day.setdefault(day, {})[role] = row
+
+        points: list[dict] = []
+        for day in sorted(by_day):
+            s = by_day[day]
+            if not all(k in s for k in ("temp", "rh", "wind", "solar")):
+                continue
+            t = s["temp"]
+            rh = s["rh"].get("mean")
+            wind = s["wind"].get("mean")
+            solar = s["solar"].get("mean")
+            if t.get("min") is None or t.get("max") is None:
+                continue
+            if None in (rh, wind, solar):
+                continue
+            if self._wind_unit == "km/h":
+                wind /= 3.6
+            if "pressure" in s and s["pressure"].get("mean") is not None:
+                pressure = s["pressure"]["mean"]
+                if self._pressure_unit == "hPa":
+                    pressure /= 10.0
+            else:
+                pressure = et.atmospheric_pressure(self._elev)
+            dt0 = dt_util.start_of_local_day(day)
+            try:
+                et0 = round(
+                    et.et0_daily(
+                        t_min=t["min"],
+                        t_max=t["max"],
+                        rh_mean=rh,
+                        wind_ms=wind,
+                        solar_w_m2=solar,
+                        pressure_kpa=pressure,
+                        latitude_deg=self._lat,
+                        elevation_m=self._elev,
+                        day_of_year=dt0.timetuple().tm_yday,
+                        wind_sensor_height_m=self._wind_h,
+                    ),
+                    2,
+                )
+            except (ValueError, ZeroDivisionError):
+                continue
+            points.append({"start": dt0, "min": et0, "max": et0, "mean": et0})
+
+        if not points:
+            return 0
+        metadata = {
+            **mean_meta,
+            "has_sum": False,
+            "name": None,
+            "source": "recorder",
+            "statistic_id": stat_id,
+            "unit_class": None,
+            "unit_of_measurement": "mm",
+        }
+        async_import_statistics(self.hass, metadata, points)
+        _LOGGER.info(
+            "Iriy: %d Tage ET0 als Statistik nachgetragen (%s)", len(points), stat_id
+        )
+        return len(points)
 
     # --- Quell-Updates --------------------------------------------------
 

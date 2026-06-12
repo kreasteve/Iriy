@@ -130,8 +130,9 @@ pytest tests/ -v
 - [ ] **Strategien** (pluggable): „Morgens um 4 das Defizit nachgießen",
       Bewässerungsfenster, Max-Laufzeit, Regen-Sperre, Liter statt Minuten
 - [ ] **Saisonale Kc-Kurven** (Frühling/Hochsommer/Hitzewelle)
-- [ ] **Historischer Backfill**: ET₀ aus Recorder-History rückrechnen und als
-      Langzeitstatistik einspeisen
+- [x] **Historischer Backfill**: Tagesbilanz beim Einrichten aus der Recorder-
+      History rekonstruieren; vergangene Tage als ET₀-Langzeitstatistik einspeisen
+      (`iriy.backfill`, `days`-Parameter)
 - [ ] **Editierbare Oberfläche** (eigenes Lovelace-Panel, z2m-Stil) für Zonen,
       Strategien und Live-Bilanz
 - [ ] **HACS-Release** + Übersetzungen

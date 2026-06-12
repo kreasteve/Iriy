@@ -17,7 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, PLATFORMS
+from .const import DEFAULT_BACKFILL_DAYS, DOMAIN, PLATFORMS
 from .coordinator import IriyCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,12 +29,20 @@ SERVICE_BACKFILL = "backfill"
 
 ATTR_ZONE = "zone"
 ATTR_MM = "mm"
+ATTR_DAYS = "days"
 
 _RESET_SCHEMA = vol.Schema({vol.Optional(ATTR_ZONE): cv.string})
 _ADD_WATER_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_ZONE): cv.string,
         vol.Required(ATTR_MM): vol.Coerce(float),
+    }
+)
+_BACKFILL_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_DAYS, default=DEFAULT_BACKFILL_DAYS): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=365)
+        )
     }
 )
 
@@ -50,6 +58,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
     _register_services(hass)
+
+    # Frische Einrichtung: vergangene Tage als ET0-Statistik nachtragen, sobald
+    # die Entities registriert sind (nach dem Platform-Setup).
+    if not coordinator.loaded_existing:
+        await coordinator.async_import_history_statistics(DEFAULT_BACKFILL_DAYS)
     return True
 
 
@@ -93,8 +106,11 @@ def _register_services(hass: HomeAssistant) -> None:
             coord.add_water(zone, mm)
 
     async def _backfill(call: ServiceCall) -> None:
+        days = call.data.get(ATTR_DAYS, DEFAULT_BACKFILL_DAYS)
         for coord in _coordinators(hass):
             await coord.async_backfill()
+            if days:
+                await coord.async_import_history_statistics(days)
 
     hass.services.async_register(
         DOMAIN, SERVICE_RECALCULATE, _recalculate
@@ -105,7 +121,9 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_WATER, _add_water, schema=_ADD_WATER_SCHEMA
     )
-    hass.services.async_register(DOMAIN, SERVICE_BACKFILL, _backfill)
+    hass.services.async_register(
+        DOMAIN, SERVICE_BACKFILL, _backfill, schema=_BACKFILL_SCHEMA
+    )
 
 
 def _unregister_services(hass: HomeAssistant) -> None:

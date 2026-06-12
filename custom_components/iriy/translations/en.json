@@ -98,7 +98,13 @@
     },
     "backfill": {
       "name": "Backfill from history",
-      "description": "Discard today's balance and rebuild it from the recorder history (yesterday's daily value + today's course since midnight)."
+      "description": "Discard today's balance and rebuild it from the recorder history (yesterday's daily value + today's course). With days > 0, past days are also added as long-term ET0 statistics (as far back as data exists).",
+      "fields": {
+        "days": {
+          "name": "Days back",
+          "description": "How many past days to add as ET0 statistics (0 = only today/yesterday)."
+        }
+      }
     },
     "reset_bucket": {
       "name": "Reset deficit",

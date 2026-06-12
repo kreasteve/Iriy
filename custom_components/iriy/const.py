@@ -53,6 +53,7 @@ DEFAULT_RAIN_MODE = "cumulative_daily"
 DEFAULT_HOURLY = True
 DEFAULT_UPDATE_MINUTES = 60
 MIN_UPDATE_MINUTES = 5
+DEFAULT_BACKFILL_DAYS = 30  # so weit zurueck wie History reicht (gekappt durch Datenlage)
 
 DEFAULT_THROUGHPUT = 20.0   # mm/h Tropfschlauch
 DEFAULT_MAX_DEFICIT = 30.0  # mm bis "Welkepunkt"
