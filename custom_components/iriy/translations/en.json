@@ -1,0 +1,115 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Iriy – Setup",
+        "description": "Select your weather-station sensors and location. Iriy computes FAO-56 reference evapotranspiration (ET0) from them.",
+        "data": {
+          "temperature": "Temperature sensor",
+          "humidity": "Humidity sensor",
+          "wind": "Wind-speed sensor",
+          "wind_unit": "Wind unit",
+          "wind_height": "Wind sensor height (m)",
+          "solar": "Solar radiation sensor (W/m²)",
+          "pressure": "Pressure sensor (optional)",
+          "pressure_unit": "Pressure unit",
+          "rain": "Rain sensor (optional)",
+          "rain_mode": "Rain sensor mode",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "elevation": "Elevation (m)",
+          "hourly": "Hourly live calculation",
+          "update_minutes": "Update interval (min)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Iriy",
+        "menu_options": {
+          "settings": "Edit settings",
+          "add_zone": "Add zone",
+          "edit_zone": "Edit zone",
+          "remove_zone": "Remove zone"
+        }
+      },
+      "settings": {
+        "title": "Settings",
+        "data": {
+          "temperature": "Temperature sensor",
+          "humidity": "Humidity sensor",
+          "wind": "Wind-speed sensor",
+          "wind_unit": "Wind unit",
+          "wind_height": "Wind sensor height (m)",
+          "solar": "Solar radiation sensor (W/m²)",
+          "pressure": "Pressure sensor (optional)",
+          "pressure_unit": "Pressure unit",
+          "rain": "Rain sensor (optional)",
+          "rain_mode": "Rain sensor mode",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "elevation": "Elevation (m)",
+          "hourly": "Hourly live calculation",
+          "update_minutes": "Update interval (min)"
+        }
+      },
+      "add_zone": {
+        "title": "Add zone",
+        "data": {
+          "name": "Zone name",
+          "kc": "Crop coefficient Kc",
+          "throughput": "Emitter rate (mm/h)",
+          "efficiency": "Irrigation efficiency (0–1)",
+          "max_deficit": "Max deficit (mm)"
+        }
+      },
+      "edit_zone": {
+        "title": "Edit zone",
+        "data": { "name": "Zone" }
+      },
+      "edit_zone_form": {
+        "title": "Edit zone: {zone}",
+        "data": {
+          "kc": "Crop coefficient Kc",
+          "throughput": "Emitter rate (mm/h)",
+          "efficiency": "Irrigation efficiency (0–1)",
+          "max_deficit": "Max deficit (mm)"
+        }
+      },
+      "remove_zone": {
+        "title": "Remove zone",
+        "data": { "name": "Zone" }
+      }
+    },
+    "error": {
+      "name_required": "A zone name is required.",
+      "name_exists": "A zone with that name already exists."
+    },
+    "abort": {
+      "no_zones": "No zones configured yet."
+    }
+  },
+  "services": {
+    "recalculate": {
+      "name": "Recalculate",
+      "description": "Force an immediate recomputation of ET0 and deficit."
+    },
+    "reset_bucket": {
+      "name": "Reset deficit",
+      "description": "Reset the water deficit to 0.",
+      "fields": {
+        "zone": { "name": "Zone", "description": "Zone name. Empty = all zones." }
+      }
+    },
+    "add_water": {
+      "name": "Log water",
+      "description": "Subtract an applied amount of water (mm) from a zone's deficit.",
+      "fields": {
+        "zone": { "name": "Zone", "description": "Zone name." },
+        "mm": { "name": "Amount (mm)", "description": "Applied water in millimetres." }
+      }
+    }
+  }
+}

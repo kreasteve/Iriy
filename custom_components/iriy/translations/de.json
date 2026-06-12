@@ -1,0 +1,115 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Iriy – Einrichtung",
+        "description": "Wähle die Sensoren deiner Wetterstation und den Standort. Iriy berechnet daraus die Referenz-Verdunstung (ET0) nach FAO-56.",
+        "data": {
+          "temperature": "Temperatursensor",
+          "humidity": "Luftfeuchtesensor",
+          "wind": "Windgeschwindigkeitssensor",
+          "wind_unit": "Wind-Einheit",
+          "wind_height": "Sensorhöhe Wind (m)",
+          "solar": "Globalstrahlung (W/m²)",
+          "pressure": "Luftdrucksensor (optional)",
+          "pressure_unit": "Druck-Einheit",
+          "rain": "Regensensor (optional)",
+          "rain_mode": "Regensensor-Modus",
+          "latitude": "Breitengrad",
+          "longitude": "Längengrad",
+          "elevation": "Höhe über NN (m)",
+          "hourly": "Stündliche Live-Berechnung",
+          "update_minutes": "Aktualisierungsintervall (min)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Iriy",
+        "menu_options": {
+          "settings": "Einstellungen bearbeiten",
+          "add_zone": "Zone hinzufügen",
+          "edit_zone": "Zone bearbeiten",
+          "remove_zone": "Zone entfernen"
+        }
+      },
+      "settings": {
+        "title": "Einstellungen",
+        "data": {
+          "temperature": "Temperatursensor",
+          "humidity": "Luftfeuchtesensor",
+          "wind": "Windgeschwindigkeitssensor",
+          "wind_unit": "Wind-Einheit",
+          "wind_height": "Sensorhöhe Wind (m)",
+          "solar": "Globalstrahlung (W/m²)",
+          "pressure": "Luftdrucksensor (optional)",
+          "pressure_unit": "Druck-Einheit",
+          "rain": "Regensensor (optional)",
+          "rain_mode": "Regensensor-Modus",
+          "latitude": "Breitengrad",
+          "longitude": "Längengrad",
+          "elevation": "Höhe über NN (m)",
+          "hourly": "Stündliche Live-Berechnung",
+          "update_minutes": "Aktualisierungsintervall (min)"
+        }
+      },
+      "add_zone": {
+        "title": "Zone hinzufügen",
+        "data": {
+          "name": "Zonenname",
+          "kc": "Pflanzen-Koeffizient Kc",
+          "throughput": "Niederschlagsrate (mm/h)",
+          "efficiency": "Bewässerungs-Wirkungsgrad (0–1)",
+          "max_deficit": "Maximales Defizit (mm)"
+        }
+      },
+      "edit_zone": {
+        "title": "Zone bearbeiten",
+        "data": { "name": "Zone" }
+      },
+      "edit_zone_form": {
+        "title": "Zone bearbeiten: {zone}",
+        "data": {
+          "kc": "Pflanzen-Koeffizient Kc",
+          "throughput": "Niederschlagsrate (mm/h)",
+          "efficiency": "Bewässerungs-Wirkungsgrad (0–1)",
+          "max_deficit": "Maximales Defizit (mm)"
+        }
+      },
+      "remove_zone": {
+        "title": "Zone entfernen",
+        "data": { "name": "Zone" }
+      }
+    },
+    "error": {
+      "name_required": "Ein Zonenname ist erforderlich.",
+      "name_exists": "Eine Zone mit diesem Namen existiert bereits."
+    },
+    "abort": {
+      "no_zones": "Es sind noch keine Zonen angelegt."
+    }
+  },
+  "services": {
+    "recalculate": {
+      "name": "Neu berechnen",
+      "description": "Erzwingt eine sofortige Neuberechnung von ET0 und Defizit."
+    },
+    "reset_bucket": {
+      "name": "Defizit zurücksetzen",
+      "description": "Setzt das Wasserdefizit auf 0.",
+      "fields": {
+        "zone": { "name": "Zone", "description": "Name der Zone. Leer = alle Zonen." }
+      }
+    },
+    "add_water": {
+      "name": "Wasser verbuchen",
+      "description": "Zieht eine ausgebrachte Wassermenge (mm) vom Defizit einer Zone ab.",
+      "fields": {
+        "zone": { "name": "Zone", "description": "Name der Zone." },
+        "mm": { "name": "Menge (mm)", "description": "Ausgebrachte Wassermenge in Millimetern." }
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+recalculate:
+  name: Neu berechnen
+  description: Erzwingt eine sofortige Neuberechnung von ET0 und Defizit.
+
+reset_bucket:
+  name: Defizit zuruecksetzen
+  description: Setzt das Wasserdefizit auf 0 (z. B. nach manueller Bewaesserung).
+  fields:
+    zone:
+      name: Zone
+      description: Name der Zone. Leer = alle Zonen.
+      required: false
+      selector:
+        text:
+
+add_water:
+  name: Wasser verbuchen
+  description: Zieht eine ausgebrachte Wassermenge (mm) vom Defizit einer Zone ab.
+  fields:
+    zone:
+      name: Zone
+      description: Name der Zone.
+      required: true
+      selector:
+        text:
+    mm:
+      name: Menge (mm)
+      description: Ausgebrachte Wassermenge in Millimetern.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: mm
