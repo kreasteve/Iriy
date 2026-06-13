@@ -25,8 +25,10 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_ELEVATION,
+    CONF_HISTORY_DAYS,
     CONF_HOURLY,
     CONF_HUMIDITY,
+    CONF_IMPORT_HISTORY,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_PRESSURE,
@@ -45,8 +47,10 @@ from .const import (
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
     CONF_ZONES,
+    DEFAULT_BACKFILL_DAYS,
     DEFAULT_EFFICIENCY,
     DEFAULT_HOURLY,
+    DEFAULT_IMPORT_HISTORY,
     DEFAULT_MAX_DEFICIT,
     DEFAULT_PRESSURE_UNIT,
     DEFAULT_RAIN_MODE,
@@ -132,6 +136,14 @@ def _settings_schema(defaults: dict) -> vol.Schema:
                 CONF_UPDATE_MINUTES,
                 default=defaults.get(CONF_UPDATE_MINUTES, DEFAULT_UPDATE_MINUTES),
             ): _num(MIN_UPDATE_MINUTES, 720, 5, "min"),
+            vol.Required(
+                CONF_IMPORT_HISTORY,
+                default=defaults.get(CONF_IMPORT_HISTORY, DEFAULT_IMPORT_HISTORY),
+            ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_HISTORY_DAYS,
+                default=defaults.get(CONF_HISTORY_DAYS, DEFAULT_BACKFILL_DAYS),
+            ): _num(0, 365, 1, "Tage"),
         }
     )
 

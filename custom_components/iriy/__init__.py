@@ -59,10 +59,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _register_services(hass)
 
-    # Frische Einrichtung: vergangene Tage als ET0-Statistik nachtragen, sobald
-    # die Entities registriert sind (nach dem Platform-Setup).
-    if not coordinator.loaded_existing:
-        await coordinator.async_import_history_statistics(DEFAULT_BACKFILL_DAYS)
+    # Historischen Import (Haken im Setup) EINMALIG ausfuehren, sobald die
+    # Entities registriert sind (nach dem Platform-Setup). Das Flag verhindert
+    # erneuten Import bei jedem Neustart; zum bewussten Auffrischen gibt es den
+    # Service iriy.backfill.
+    if (
+        coordinator.import_history
+        and not coordinator.history_imported
+        and coordinator.history_days > 0
+    ):
+        count = await coordinator.async_import_history_statistics(
+            coordinator.history_days
+        )
+        if count:
+            await coordinator.mark_history_imported()
     return True
 
 

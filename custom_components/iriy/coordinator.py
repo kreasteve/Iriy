@@ -35,8 +35,10 @@ import homeassistant.util.dt as dt_util
 from . import et
 from .const import (
     CONF_ELEVATION,
+    CONF_HISTORY_DAYS,
     CONF_HOURLY,
     CONF_HUMIDITY,
+    CONF_IMPORT_HISTORY,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_PRESSURE,
@@ -55,9 +57,11 @@ from .const import (
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
     CONF_ZONES,
+    DEFAULT_BACKFILL_DAYS,
     DEFAULT_EFFICIENCY,
     DEFAULT_ELEVATION,
     DEFAULT_HOURLY,
+    DEFAULT_IMPORT_HISTORY,
     DEFAULT_LATITUDE,
     DEFAULT_LONGITUDE,
     DEFAULT_MAX_DEFICIT,
@@ -188,6 +192,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._elev = float(self._opt(CONF_ELEVATION, DEFAULT_ELEVATION))
         self._wind_h = float(self._opt(CONF_WIND_HEIGHT, DEFAULT_WIND_HEIGHT))
         self._hourly = bool(self._opt(CONF_HOURLY, DEFAULT_HOURLY))
+        self._import_history = bool(
+            self._opt(CONF_IMPORT_HISTORY, DEFAULT_IMPORT_HISTORY)
+        )
+        self._history_days = int(self._opt(CONF_HISTORY_DAYS, DEFAULT_BACKFILL_DAYS))
+        self._history_imported = False  # aus Store geladen
 
         # Quell-Entities + Einheiten
         self._src = {
@@ -241,6 +250,22 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     def loaded_existing(self) -> bool:
         """True, wenn beim Setup schon persistierter Zustand vorlag."""
         return self._loaded_existing
+
+    @property
+    def import_history(self) -> bool:
+        return self._import_history
+
+    @property
+    def history_days(self) -> int:
+        return self._history_days
+
+    @property
+    def history_imported(self) -> bool:
+        return self._history_imported
+
+    async def mark_history_imported(self) -> None:
+        self._history_imported = True
+        await self._async_save()
 
     def _build_zones(self) -> None:
         existing = {n: z.deficit for n, z in self.zones.items()}
@@ -877,6 +902,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # Langlebiger Zustand wird IMMER wiederhergestellt (ueberlebt Tageswechsel):
         self.et0_daily = data.get("et0_daily")
         self._rain_last = data.get("rain_last")
+        self._history_imported = bool(data.get("history_imported", False))
         for name, zd in (data.get("zones") or {}).items():
             zone = self.zones.get(name)
             if zone is None:
@@ -914,6 +940,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         await self._store.async_save(
             {
                 "day": self._current_day,
+                "history_imported": self._history_imported,
                 "et0_daily": self.et0_daily,
                 "et0_today": self.et0_today,
                 "et0_rate": self.et0_rate,

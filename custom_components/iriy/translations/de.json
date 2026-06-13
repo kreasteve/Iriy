@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Iriy – Einrichtung",
-        "description": "Wähle die Sensoren deiner Wetterstation und den Standort. Iriy berechnet daraus die Referenz-Verdunstung (ET0) nach FAO-56.",
+        "description": "Wähle die ROHEN Sensoren deiner Wetterstation (Momentanwerte, KEINE Tages-Aggregat-Sensoren). Iriy berechnet daraus die Referenz-Verdunstung (ET0) nach FAO-56.",
         "data": {
           "temperature": "Temperatursensor",
           "humidity": "Luftfeuchtesensor",
@@ -19,7 +19,19 @@
           "longitude": "Längengrad",
           "elevation": "Höhe über NN (m)",
           "hourly": "Stündliche Live-Berechnung",
-          "update_minutes": "Aktualisierungsintervall (min)"
+          "update_minutes": "Aktualisierungsintervall (min)",
+          "import_history": "Historische Daten importieren",
+          "history_days": "Tage rückwirkend"
+        },
+        "data_description": {
+          "temperature": "Aktuelle Außentemperatur – ein Momentanwert, KEIN Tages-Min/Max-Sensor.",
+          "humidity": "Aktuelle relative Luftfeuchte (%).",
+          "wind": "Aktuelle Windgeschwindigkeit (Mittel) – NICHT der Böen-Sensor.",
+          "solar": "Globalstrahlung in W/m² (Momentanwert).",
+          "pressure": "Absoluter Luftdruck (Stationsdruck) – NICHT der relative/Meereshöhen-Wert.",
+          "rain": "Regenmenge. Für den Modus 'Zähler (Reset täglich)' einen Tages-Regenzähler wählen.",
+          "import_history": "Beim Einrichten ET0 vergangener Tage aus dem Recorder in den Verlaufsgraphen importieren (so weit Daten vorhanden). Läuft einmalig; späteres Auffrischen über den Service iriy.backfill.",
+          "history_days": "Wie viele vergangene Tage importieren (0 = keine)."
         }
       }
     }
@@ -52,7 +64,19 @@
           "longitude": "Längengrad",
           "elevation": "Höhe über NN (m)",
           "hourly": "Stündliche Live-Berechnung",
-          "update_minutes": "Aktualisierungsintervall (min)"
+          "update_minutes": "Aktualisierungsintervall (min)",
+          "import_history": "Historische Daten importieren",
+          "history_days": "Tage rückwirkend"
+        },
+        "data_description": {
+          "temperature": "Aktuelle Außentemperatur – ein Momentanwert, KEIN Tages-Min/Max-Sensor.",
+          "humidity": "Aktuelle relative Luftfeuchte (%).",
+          "wind": "Aktuelle Windgeschwindigkeit (Mittel) – NICHT der Böen-Sensor.",
+          "solar": "Globalstrahlung in W/m² (Momentanwert).",
+          "pressure": "Absoluter Luftdruck (Stationsdruck) – NICHT der relative/Meereshöhen-Wert.",
+          "rain": "Regenmenge. Für den Modus 'Zähler (Reset täglich)' einen Tages-Regenzähler wählen.",
+          "import_history": "Vergangene Tage importieren, wenn aktiviert (läuft einmalig). Zum Auffrischen den Service iriy.backfill nutzen.",
+          "history_days": "Wie viele vergangene Tage importieren (0 = keine)."
         }
       },
       "add_zone": {

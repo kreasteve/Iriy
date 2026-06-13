@@ -30,6 +30,10 @@ CONF_RAIN_MODE = "rain_mode"          # "cumulative_daily" | "rate" | "increment
 CONF_HOURLY = "hourly"                # sub-taegliche Live-Berechnung an/aus
 CONF_UPDATE_MINUTES = "update_minutes"
 
+# Historischer Import beim Einrichten
+CONF_IMPORT_HISTORY = "import_history"  # Haken: vergangene Tage importieren
+CONF_HISTORY_DAYS = "history_days"      # wie viele Tage rueckwirkend
+
 # Zonen (Liste von Dicts in options[CONF_ZONES])
 CONF_ZONES = "zones"
 CONF_ZONE_NAME = "name"
@@ -54,6 +58,7 @@ DEFAULT_HOURLY = True
 DEFAULT_UPDATE_MINUTES = 60
 MIN_UPDATE_MINUTES = 5
 DEFAULT_BACKFILL_DAYS = 30  # so weit zurueck wie History reicht (gekappt durch Datenlage)
+DEFAULT_IMPORT_HISTORY = True
 
 DEFAULT_THROUGHPUT = 20.0   # mm/h Tropfschlauch
 DEFAULT_MAX_DEFICIT = 30.0  # mm bis "Welkepunkt"

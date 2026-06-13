@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Iriy – Setup",
-        "description": "Select your weather-station sensors and location. Iriy computes FAO-56 reference evapotranspiration (ET0) from them.",
+        "description": "Pick the RAW sensors of your weather station (instantaneous current values, NOT daily-aggregate sensors). Iriy computes FAO-56 reference evapotranspiration (ET0) from them.",
         "data": {
           "temperature": "Temperature sensor",
           "humidity": "Humidity sensor",
@@ -19,7 +19,19 @@
           "longitude": "Longitude",
           "elevation": "Elevation (m)",
           "hourly": "Hourly live calculation",
-          "update_minutes": "Update interval (min)"
+          "update_minutes": "Update interval (min)",
+          "import_history": "Import historical data",
+          "history_days": "Days back"
+        },
+        "data_description": {
+          "temperature": "Current outdoor temperature — an instantaneous value, NOT a daily min/max sensor.",
+          "humidity": "Current relative humidity (%).",
+          "wind": "Current wind speed (average) — NOT the gust sensor.",
+          "solar": "Global/solar radiation in W/m² (instantaneous).",
+          "pressure": "Absolute (station) pressure — NOT the relative/sea-level value.",
+          "rain": "Rain amount. For mode 'Cumulative (resets daily)' pick a daily rain counter.",
+          "import_history": "On setup, import ET0 for past days from the recorder into the history graph (as far back as data exists). Runs once; refresh later via the iriy.backfill service.",
+          "history_days": "How many past days to import (0 = none)."
         }
       }
     }
@@ -52,7 +64,19 @@
           "longitude": "Longitude",
           "elevation": "Elevation (m)",
           "hourly": "Hourly live calculation",
-          "update_minutes": "Update interval (min)"
+          "update_minutes": "Update interval (min)",
+          "import_history": "Import historical data",
+          "history_days": "Days back"
+        },
+        "data_description": {
+          "temperature": "Current outdoor temperature — an instantaneous value, NOT a daily min/max sensor.",
+          "humidity": "Current relative humidity (%).",
+          "wind": "Current wind speed (average) — NOT the gust sensor.",
+          "solar": "Global/solar radiation in W/m² (instantaneous).",
+          "pressure": "Absolute (station) pressure — NOT the relative/sea-level value.",
+          "rain": "Rain amount. For mode 'Cumulative (resets daily)' pick a daily rain counter.",
+          "import_history": "Import past days when enabled (runs once). Use the iriy.backfill service to refresh.",
+          "history_days": "How many past days to import (0 = none)."
         }
       },
       "add_zone": {
