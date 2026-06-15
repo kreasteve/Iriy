@@ -35,8 +35,12 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = [
         IriyValueSensor(
+            # KEIN state_class: HA soll diese "gestern"-Entitaet NICHT selbst
+            # aufzeichnen (das waere um einen Tag verschoben und kollidierte mit
+            # unserem korrekt datierten Import). Die Tageshistorie kommt allein
+            # aus async_import_statistics (siehe coordinator._import_et0_points).
             coordinator, entry, "et0_daily", "mm", "mdi:water-percent",
-            lambda d: d.et0_daily, _et0_attrs, SensorStateClass.MEASUREMENT,
+            lambda d: d.et0_daily, _et0_attrs, None,
         ),
         IriyValueSensor(
             coordinator, entry, "et0_today", "mm", "mdi:counter",

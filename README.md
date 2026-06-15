@@ -145,29 +145,28 @@ pytest tests/ -v
 
 ## Dashboard: 7-Tage-Diagramm
 
-Iriy schreibt den kanonischen ET₀-Tagesverlauf als **externe Statistik
-`iriy:et0_daily`** — korrekt datiert (Wert von Tag D liegt auf Tag D), ein Wert
-pro Tag, von Iriy jederzeit neu rechenbar (nicht der zeitlich verschobene Roh-
-Verlauf des „gestern"-Sensors). Den zeigst du am saubersten mit einer
+Iriy schreibt den ET₀-Tagesverlauf **direkt in die Entität `sensor.iriy_et0_tag`**
+(„ET0 (gestern)") als korrekt datierte Tagesstatistik — Wert von Tag D liegt auf
+Tag D, ein Wert pro Tag, vom **Button/Finalizer** beliebig viele Tage zurück neu
+rechenbar. (Die Entität trägt bewusst kein `state_class`, damit HA sie nicht
+zusätzlich – und um einen Tag verschoben – selbst aufzeichnet.) Anzeige mit einer
 **Statistik-Karte** (Bordmittel, keine HACS-Karte nötig):
 
 ```yaml
 type: statistics-graph
-title: ET₀ pro Tag
+title: ET0 (gestern) – Verlauf
 chart_type: bar
 period: day
 days_to_show: 14
 stat_types:
   - mean
-statistics:
-  - iriy:et0_daily
+entities:
+  - sensor.iriy_et0_tag
 ```
 
 Ein kombiniertes **Wetter**-Diagramm (Sonne, Wind, Regen) mit zwei Achsen geht mit
 der **[ApexCharts-Card](https://github.com/RomRider/apexcharts-card)** (über HACS).
-Die Wetter-Serien lesen wir per `group_by` aus der **Roh-History** (~letzte 10 Tage)
-— denn nicht jede Station erzeugt für diese Sensoren eine Tages-Langzeitstatistik
-(bei GW3000A/WS90 fehlt sie). Passe die `sensor.gw3000a_*`-IDs an deine Station an.
+Passe die `sensor.gw3000a_*`-IDs an deine Station an.
 
 ```yaml
 type: custom:apexcharts-card
