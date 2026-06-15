@@ -227,6 +227,9 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self.et0_today = 0.0
         self.et0_rate: float | None = None
         self._last_tick: datetime | None = None
+        # Letzter bereits finalisierter Tag (ISO-Datum) – Marker fuer die
+        # selbstheilende Tagesschreibung (verhindert Doppelschreiben).
+        self._last_finalized_day: str | None = None
         # Datum, zu dem die Tages-Akkumulatoren gehoeren (lokale ISO-Datum).
         # Dient dem Tageswechsel-Abgleich beim Laden nach einem Neustart.
         self._current_day: str | None = None
@@ -303,16 +306,12 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             if state is not None:
                 self._ingest(eid, state.state)
 
+        # Punkt 00:00: Tag zuruecksetzen + gestrigen Tageswert sofort finalisieren
+        # (siehe _handle_midnight). Zusaetzlich heilt jeder Koordinator-Tick einen
+        # ausgefallenen 00:00-Lauf selbst (async_finalize_yesterday(force=False)).
         self._unsubs.append(
             async_track_time_change(
                 self.hass, self._handle_midnight, hour=0, minute=0, second=5
-            )
-        )
-        # Kurz nach Mitternacht den gestrigen Tageswert aus der Recorder-
-        # Stundenstatistik finalisieren (dann ist die letzte Stunde verdichtet).
-        self._unsubs.append(
-            async_track_time_change(
-                self.hass, self._handle_finalize, hour=0, minute=20, second=0
             )
         )
         # Frische Einrichtung: Tagesbilanz aus der Recorder-History aufbauen,
@@ -775,6 +774,9 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     async def _async_update_data(self) -> IriyData:
         now = dt_util.utcnow()
+        # Selbstheilung: gestrigen Tageswert nachholen, falls der 00:00-Lauf
+        # ausfiel (idempotent – tut nur etwas, wenn noch nicht finalisiert).
+        await self.async_finalize_yesterday(force=False, refresh=False)
         if self._rain_mode == "rate" and self._rain_rate_iv.mean is not None:
             # Auch das erste Fenster nach (Neu-)Start zaehlen: dann fehlt
             # _last_tick, also das konfigurierte Intervall als Dauer annehmen.
@@ -856,17 +858,15 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     @callback
     def _handle_midnight(self, now: datetime) -> None:
-        """Tag abschliessen und Tag zuruecksetzen.
-
-        Der KANONISCHE ET0-Tageswert wird kurz nach Mitternacht aus der
-        Recorder-STUNDENstatistik finalisiert (async_finalize_yesterday),
-        sobald die letzte Stunde verdichtet ist. Hier setzen wir nur einen
-        sofortigen Provisorisch-Wert, damit der Sensor nahtlos weiterlaeuft.
+        """Punkt 00:00: gestrigen Tageswert SOFORT finalisieren (eindeutig dem
+        Vortag zugeordnet, datiert auf dessen lokale Mitternacht) und den Tag
+        zuruecksetzen. Der Wert kommt lueckenrobust aus der Recorder-Statistik.
         """
-        # Den kanonischen Tageswert setzt kurz darauf async_finalize_yesterday()
-        # aus der Statistik – hier KEIN Provisorium (vermeidet den sichtbaren
-        # Tagesbruch 00:00 -> 00:20). Ohne Sub-Tagesspur trotzdem das Defizit
-        # einmal taeglich fuettern.
+        # Gestrigen Tageswert sofort um 00:00 schreiben (force, datiert Vortag).
+        self.hass.async_create_task(
+            self.async_finalize_yesterday(force=True, refresh=True)
+        )
+        # Ohne Sub-Tagesspur das Defizit einmal taeglich fuettern.
         if not self._hourly:
             et0 = self._compute_daily()
             if et0 is not None:
@@ -882,34 +882,37 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._current_day = now.date().isoformat()
         self.hass.async_create_task(self._async_save())
         self.async_set_updated_data(self._snapshot())
-        _LOGGER.debug("Iriy: Tag abgeschlossen, ET0=%s mm", self.et0_daily)
+        _LOGGER.debug("Iriy: Tageswechsel -> %s", self._current_day)
 
-    async def async_finalize_yesterday(self) -> None:
-        """Gestrigen ET0-Tageswert aus der Recorder-Stundenstatistik bilden.
+    async def async_finalize_yesterday(
+        self, force: bool = True, refresh: bool = True
+    ) -> None:
+        """Gestrigen ET0-Tageswert aus der Recorder-Statistik bilden und – auf den
+        VORTAG datiert (dessen lokale Mitternacht) – in Sensor + Langzeitstatistik
+        schreiben (idempotenter Upsert). Die heutige Bilanz bleibt unberuehrt.
 
-        Das ist der KANONISCHE Wert: Summe von et0_hourly ueber die
-        stuendlichen Mittel des Recorders – zeit-gewichtet, lueckenrobust und
-        unabhaengig davon, ob Iriy durchlief. Schreibt den Wert auch in die
-        Langzeitstatistik (Upsert), damit Sensor und Verlaufsgraph stimmen.
-        Die heutige Defizit-Bilanz wird dabei NICHT angetastet.
+        Selbstheilend: mit force=False passiert nur etwas, wenn der Vortag noch
+        nicht finalisiert wurde (Marker _last_finalized_day). So holt jeder
+        Koordinator-Tick einen ausgefallenen 00:00-Lauf nach – unabhaengig von
+        einem einzelnen Trigger.
         """
         today0 = dt_util.start_of_local_day()
         yesterday0 = today0 - timedelta(days=1)
-        by_day = await self._et0_days_from_stats(yesterday0, today0)
         yday = yesterday0.date()
+        if not force and self._last_finalized_day == yday.isoformat():
+            return
+        by_day = await self._et0_days_from_stats(yesterday0, today0)
         if yday not in by_day:
-            _LOGGER.debug(
-                "Iriy: Finalisierung – keine Stundenstatistik fuer %s gefunden", yday
-            )
+            _LOGGER.debug("Iriy: %s noch nicht finalisierbar (keine Statistik)", yday)
             return
         self.et0_daily = by_day[yday]
-        await self._import_et0_points({yday: by_day[yday]})
+        wrote = await self._import_et0_points({yday: by_day[yday]})
+        if wrote:  # Marker erst setzen, wenn die Statistik wirklich geschrieben ist
+            self._last_finalized_day = yday.isoformat()
         await self._async_save()
-        self.async_set_updated_data(self._snapshot())
-        _LOGGER.info("Iriy: ET0 gestern aus Statistik = %s mm", self.et0_daily)
-
-    async def _handle_finalize(self, now: datetime) -> None:
-        await self.async_finalize_yesterday()
+        if refresh:
+            self.async_set_updated_data(self._snapshot())
+        _LOGGER.info("Iriy: Tageswert %s = %s mm geschrieben", yday, self.et0_daily)
 
     def _compute_daily(self) -> float | None:
         t = self._day["temp"]
@@ -1008,6 +1011,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self.et0_daily = data.get("et0_daily")
         self._rain_last = data.get("rain_last")
         self._history_imported = bool(data.get("history_imported", False))
+        self._last_finalized_day = data.get("last_finalized_day")
         for name, zd in (data.get("zones") or {}).items():
             zone = self.zones.get(name)
             if zone is None:
@@ -1046,6 +1050,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             {
                 "day": self._current_day,
                 "history_imported": self._history_imported,
+                "last_finalized_day": self._last_finalized_day,
                 "et0_daily": self.et0_daily,
                 "et0_today": self.et0_today,
                 "et0_rate": self.et0_rate,
