@@ -59,6 +59,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _register_services(hass)
 
+    # Bestehende Installation: gestrigen Tageswert aus der Recorder-
+    # Stundenstatistik nachziehen (korrigiert frueher zu hoch gerechnete,
+    # count-gewichtete Werte) – ohne die heutige Defizit-Bilanz anzutasten.
+    if coordinator.loaded_existing:
+        await coordinator.async_finalize_yesterday()
+
     # Historischen Import (Haken im Setup) EINMALIG ausfuehren, sobald die
     # Entities registriert sind (nach dem Platform-Setup). Das Flag verhindert
     # erneuten Import bei jedem Neustart; zum bewussten Auffrischen gibt es den

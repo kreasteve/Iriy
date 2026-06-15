@@ -148,7 +148,7 @@
   },
   "entity": {
     "sensor": {
-      "et0_daily": { "name": "ET0 (daily)" },
+      "et0_daily": { "name": "ET0 (yesterday)" },
       "et0_today": { "name": "ET0 today" },
       "et0_rate": { "name": "ET0 rate" }
     }

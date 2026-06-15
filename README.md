@@ -17,11 +17,14 @@ muss – und steuert das später automatisch (Ventile, Strategien).
 - Liest die Rohsensoren deiner Station (Temperatur, Feuchte, Wind, Strahlung,
   optional Druck und Regen) – komplett **per UI** ausgewählt, kein YAML.
 - **Zwei ET-Spuren**, beide nützlich:
-  - **Tageswert** (kanonisch, vertrauenswürdig): FAO-56-Tagesgleichung über die
-    Min/Max/Mittel des Tages – die Zahl für die Morgen-Automation.
-  - **Stündlich live**: FAO-56-Stundengleichung (Gl. 53), die sich zu „heute
-    bisher" aufsummiert und das Zonen-Defizit in Echtzeit speist – reagiert
-    sofort auf Regen.
+  - **Tageswert** (kanonisch, vertrauenswürdig): Summe der FAO-56-Stunden­
+    gleichung (Gl. 53) über die **Stundenstatistik des Recorders** – zeit­
+    gewichtet und lückenrobust (unabhängig davon, ob HA durchlief). Die Zahl
+    für die Morgen-Automation; wird kurz nach Mitternacht finalisiert. (Die
+    reine Tagesmittel-Gleichung dient nur noch als Fallback ohne Stundenmodus.)
+  - **Stündlich live**: dieselbe Stundengleichung, die sich zu „heute bisher"
+    aufsummiert und das Zonen-Defizit in Echtzeit speist – reagiert sofort
+    auf Regen.
 - Pro Zone ein **Defizit-Bucket** (mm) und eine **empfohlene Laufzeit** (min).
 - Übersteht Neustarts (persistente Bilanz via HA-Storage).
 - Services: `iriy.recalculate`, `iriy.reset_bucket`, `iriy.add_water`.
@@ -136,6 +139,68 @@ pytest tests/ -v
 - [ ] **Editierbare Oberfläche** (eigenes Lovelace-Panel, z2m-Stil) für Zonen,
       Strategien und Live-Bilanz
 - [ ] **HACS-Release** + Übersetzungen
+
+---
+
+## Dashboard: 7-Tage-Diagramm
+
+Ein kombiniertes Wochen-Diagramm (Sonne, Wind, Regen, ET₀ in *einem* Chart mit
+zwei Achsen) geht am einfachsten mit der
+**[ApexCharts-Card](https://github.com/RomRider/apexcharts-card)** (über HACS
+installieren). Die Werte kommen aus der **Langzeitstatistik**, bleiben also über
+die ~10-Tage-Löschung der Rohdaten hinaus erhalten.
+
+> Ersetze die `sensor.*`-IDs durch deine echten Entitäten (Entwicklerwerkzeuge →
+> Zustände). Die ET₀-Entity heißt je nach Anlage `sensor.iriy_et0_daily` (evtl.
+> auch `…_tag`/`…_gestern` – einfach kurz nachsehen). Die Wetter-Sensoren
+> brauchen eine `state_class`, damit HA Tagesstatistiken bildet.
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 7d
+span:
+  end: day
+header:
+  show: true
+  title: Wetter & ET₀ (7 Tage)
+yaxis:
+  - id: mm
+    min: 0
+    decimals: 1
+    apex_config:
+      title: { text: mm }
+  - id: env
+    opposite: true            # rechte Achse
+    min: 0
+    apex_config:
+      title: { text: "W/m² · m/s" }
+series:
+  - entity: sensor.iriy_et0_daily        # ET₀ mm/Tag (MEASUREMENT) → max
+    name: ET₀
+    type: column
+    yaxis_id: mm
+    statistics: { type: max, period: day }
+  - entity: sensor.DEIN_DAILY_RAIN       # Regen mm (TOTAL_INCREASING) → sum
+    name: Regen
+    type: column
+    yaxis_id: mm
+    statistics: { type: sum, period: day }
+  - entity: sensor.DEINE_SOLAR           # Globalstrahlung W/m² → mean
+    name: Solar
+    type: line
+    yaxis_id: env
+    statistics: { type: mean, period: day }
+  - entity: sensor.DEIN_WIND             # Wind m/s → mean
+    name: Wind
+    type: line
+    yaxis_id: env
+    statistics: { type: mean, period: day }
+```
+
+**Wichtig:** Bei top-level `yaxis:` *nicht* zusätzlich `yaxis` in `apex_config`
+setzen (würde überschrieben). Defizit/Laufzeit je Zone zeigst du am besten mit
+einer `tile`- oder `entities`-Karte (`sensor.iriy_<zone>_defizit`,
+`sensor.iriy_<zone>_laufzeit`).
 
 ---
 

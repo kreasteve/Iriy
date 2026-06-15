@@ -308,6 +308,13 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 self.hass, self._handle_midnight, hour=0, minute=0, second=5
             )
         )
+        # Kurz nach Mitternacht den gestrigen Tageswert aus der Recorder-
+        # Stundenstatistik finalisieren (dann ist die letzte Stunde verdichtet).
+        self._unsubs.append(
+            async_track_time_change(
+                self.hass, self._handle_finalize, hour=0, minute=20, second=0
+            )
+        )
         # Frische Einrichtung: Tagesbilanz aus der Recorder-History aufbauen,
         # damit sofort sinnvolle Werte da sind statt erst ab morgen.
         if not self._loaded_existing:
@@ -404,33 +411,14 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
         t0 = today0.timestamp()
         tn = now.timestamp()
-        y0 = start.timestamp()
 
-        # 1) Gestern: kanonischer Tageswert
-        yt = [v for ts, v in series["temp"] if y0 <= ts < t0]
-        yrh = mean_win("rh", y0, t0)
-        ywind = mean_win("wind", y0, t0)
-        ysolar = mean_win("solar", y0, t0)
-        if yt and None not in (yrh, ywind, ysolar):
-            doy_y = (today0 - timedelta(days=1)).timetuple().tm_yday
-            try:
-                self.et0_daily = round(
-                    et.et0_daily(
-                        t_min=min(yt),
-                        t_max=max(yt),
-                        rh_mean=yrh,
-                        wind_ms=ywind,
-                        solar_w_m2=ysolar,
-                        pressure_kpa=pressure_at(t0),
-                        latitude_deg=self._lat,
-                        elevation_m=self._elev,
-                        day_of_year=doy_y,
-                        wind_sensor_height_m=self._wind_h,
-                    ),
-                    2,
-                )
-            except (ValueError, ZeroDivisionError):
-                pass
+        # 1) Gestern: kanonischer Tageswert = Summe der Stundenwerte aus der
+        #    Recorder-STUNDENstatistik (zeit-gewichtet + lueckenrobust,
+        #    FAO-konform) – NICHT die count-gewichtete Tagesmittel-Gleichung.
+        by_day = await self._et0_days_from_stats(start, today0)
+        yday = (today0 - timedelta(days=1)).date()
+        if yday in by_day:
+            self.et0_daily = by_day[yday]
 
         # 2) Heute: Tages-Akkumulatoren fuellen (fuer Provisorisch + Mitternacht)
         for key in ("temp", "rh", "wind", "solar", "pressure"):
@@ -507,18 +495,151 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     async def async_import_history_statistics(self, days: int = 30) -> int:
         """Vergangene Tage als ET0-Langzeitstatistik in den Tagessensor einspeisen.
 
-        Quelle ist die TAGES-Statistik der Wetterstation-Sensoren (mean/min/max
-        je Tag, geht weit zurueck) – daraus wird pro Tag ein ET0-Wert gerechnet
-        und per async_import_statistics in die Historie von sensor.iriy_et0_*
-        geschrieben. Nur ABGESCHLOSSENE Tage (vor heute), idempotent (Upsert).
+        Kanonische Methode: ET0 je Tag = Summe von et0_hourly ueber die
+        STUENDLICHEN Recorder-Statistiken (zeit-gewichtet + lueckenrobust,
+        FAO-56/ASCE-konform). Nur ABGESCHLOSSENE Tage (vor heute), idempotent
+        (Upsert in die Historie von sensor.iriy_et0_*).
+        """
+        today0 = dt_util.start_of_local_day()
+        # start_of_local_day normalisiert auf lokale Mitternacht (auch ueber
+        # DST-Grenzen) -> der aelteste Tag ist vollstaendig, kein Teiltag.
+        start = dt_util.start_of_local_day(today0 - timedelta(days=max(1, int(days))))
+        by_day = await self._et0_days_from_stats(start, today0)
+        return await self._import_et0_points(by_day)
+
+    async def _et0_days_from_stats(
+        self, start_local: datetime, end_local: datetime
+    ) -> dict:
+        """ET0 je abgeschlossenem Tag aus der STUENDLICHEN Recorder-Statistik.
+
+        Summiert et0_hourly ueber die stuendlichen Mittel des Recorders. Quelle
+        ist der Recorder (kein Live-Akkumulator) -> unabhaengig davon, ob Iriy
+        durchlief, und OHNE den count-Gewichtungs-Bias der Tagesmittel (der die
+        Tagesgleichung kuenstlich aufblaeht). Liefert {date: et0_mm}.
         """
         if "recorder" not in self.hass.config.components:
-            return 0
+            return {}
         try:
             from homeassistant.components.recorder import get_instance
             from homeassistant.components.recorder.statistics import (
-                async_import_statistics,
                 statistics_during_period,
+            )
+        except ImportError:
+            return {}
+
+        roles = {
+            self._src.get(CONF_TEMP): "temp",
+            self._src.get(CONF_HUMIDITY): "rh",
+            self._src.get(CONF_WIND): "wind",
+            self._src.get(CONF_SOLAR): "solar",
+            self._src.get(CONF_PRESSURE): "pressure",
+        }
+        ids = {sid for sid in roles if sid}
+        present = {roles[s] for s in ids}
+        if not {"temp", "rh", "wind", "solar"} <= present:
+            _LOGGER.debug(
+                "Iriy: ET0-Statistik uebersprungen – Pflichtsensoren fehlen (%s)",
+                present,
+            )
+            return {}
+        try:
+            rows = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start_local,
+                end_local,
+                ids,
+                "hour",
+                None,
+                {"mean"},
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Iriy: Stundenstatistik-Lesen fehlgeschlagen: %s", err)
+            return {}
+
+        # Je Groesse eine zeitlich sortierte (ts, mean)-Reihe (mit Einheiten-
+        # Umrechnung wie im Live-Pfad).
+        series: dict[str, list[tuple[float, float]]] = {}
+        for sid, vals in rows.items():
+            role = roles.get(sid)
+            if not role:
+                continue
+            pts: list[tuple[float, float]] = []
+            for row in vals:
+                ts = row.get("start")
+                mean = row.get("mean")
+                if ts is None or mean is None:
+                    continue
+                if ts > 1e12:  # ms -> s
+                    ts /= 1000.0
+                val = float(mean)
+                if role == "wind" and self._wind_unit == "km/h":
+                    val /= 3.6
+                elif role == "pressure" and self._pressure_unit == "hPa":
+                    val /= 10.0
+                pts.append((float(ts), val))
+            pts.sort()
+            series[role] = pts
+
+        # Ein einzelnes fehlendes Stunden-Sample wird per Carry-forward
+        # ueberbrueckt, aber NICHT laenger – sonst wuerden bei echten Recorder-
+        # Luecken Werte fabriziert; dann lieber die Stunde auslassen.
+        max_carry = 2 * 3600.0
+
+        def at(role: str, ts: float) -> float | None:
+            pts = series.get(role, [])
+            prev = [(t, v) for t, v in pts if t <= ts]
+            if not prev:
+                return None
+            t_prev, val = prev[-1]
+            if ts - t_prev > max_carry:
+                return None
+            return val
+
+        hours = sorted({t for pts in series.values() for t, _ in pts})
+        by_day: dict = {}
+        for ts in hours:
+            tm = at("temp", ts)
+            rh = at("rh", ts)
+            wind = at("wind", ts)
+            solar = at("solar", ts)
+            if None in (tm, rh, wind, solar):
+                continue
+            pressure = at("pressure", ts)
+            if pressure is None:
+                pressure = et.atmospheric_pressure(self._elev)
+            mid = dt_util.utc_from_timestamp(ts + 1800.0)  # Stundenmitte
+            # Tag konsistent ueber denselben Zeitpunkt (Stundenmitte) zuordnen,
+            # damit Physik und Tagesschluessel auch bei fraktionalen Zeitzonen
+            # und ueber DST-Grenzen uebereinstimmen.
+            day = dt_util.as_local(mid).date()
+            try:
+                e = et.et0_hourly(
+                    t_air=tm,
+                    rh=rh,
+                    wind_ms=wind,
+                    solar_w_m2=solar,
+                    pressure_kpa=pressure,
+                    latitude_deg=self._lat,
+                    longitude_east_deg=self._lon,
+                    elevation_m=self._elev,
+                    day_of_year=mid.timetuple().tm_yday,
+                    utc_hour_mid=mid.hour + mid.minute / 60.0,
+                    period_hours=1.0,
+                    wind_sensor_height_m=self._wind_h,
+                )
+            except (ValueError, ZeroDivisionError):
+                continue
+            by_day[day] = by_day.get(day, 0.0) + max(e, 0.0)
+        return {d: round(v, 2) for d, v in by_day.items()}
+
+    async def _import_et0_points(self, by_day: dict) -> int:
+        """{date: et0_mm} als Langzeitstatistik in sensor.iriy_et0_* schreiben."""
+        if not by_day or "recorder" not in self.hass.config.components:
+            return 0
+        try:
+            from homeassistant.components.recorder.statistics import (
+                async_import_statistics,
             )
         except ImportError:
             return 0
@@ -537,95 +658,19 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         )
         if not stat_id:
             _LOGGER.warning(
-                "Iriy: ET0-Tagessensor noch nicht registriert – Statistik-Backfill spaeter"
+                "Iriy: ET0-Tagessensor noch nicht registriert – Statistik spaeter"
             )
             return 0
 
-        today0 = dt_util.start_of_local_day()
-        start = today0 - timedelta(days=max(1, int(days)))
-        roles = {
-            self._src.get(CONF_TEMP): "temp",
-            self._src.get(CONF_HUMIDITY): "rh",
-            self._src.get(CONF_WIND): "wind",
-            self._src.get(CONF_SOLAR): "solar",
-            self._src.get(CONF_PRESSURE): "pressure",
-        }
-        ids = {sid for sid in roles if sid}
-        if not ids:
-            return 0
-        try:
-            rows = await get_instance(self.hass).async_add_executor_job(
-                statistics_during_period,
-                self.hass,
-                start,
-                today0,
-                ids,
-                "day",
-                None,
-                {"mean", "min", "max"},
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Iriy: Statistik-Lesen fehlgeschlagen: %s", err)
-            return 0
-
-        by_day: dict = {}
-        for sid, series in rows.items():
-            role = roles.get(sid)
-            if not role:
-                continue
-            for row in series:
-                ts = row.get("start")
-                if ts is None:
-                    continue
-                if ts > 1e12:  # ms -> s
-                    ts /= 1000.0
-                day = dt_util.as_local(dt_util.utc_from_timestamp(ts)).date()
-                by_day.setdefault(day, {})[role] = row
-
-        points: list[dict] = []
-        for day in sorted(by_day):
-            s = by_day[day]
-            if not all(k in s for k in ("temp", "rh", "wind", "solar")):
-                continue
-            t = s["temp"]
-            rh = s["rh"].get("mean")
-            wind = s["wind"].get("mean")
-            solar = s["solar"].get("mean")
-            if t.get("min") is None or t.get("max") is None:
-                continue
-            if None in (rh, wind, solar):
-                continue
-            if self._wind_unit == "km/h":
-                wind /= 3.6
-            if "pressure" in s and s["pressure"].get("mean") is not None:
-                pressure = s["pressure"]["mean"]
-                if self._pressure_unit == "hPa":
-                    pressure /= 10.0
-            else:
-                pressure = et.atmospheric_pressure(self._elev)
-            dt0 = dt_util.start_of_local_day(day)
-            try:
-                et0 = round(
-                    et.et0_daily(
-                        t_min=t["min"],
-                        t_max=t["max"],
-                        rh_mean=rh,
-                        wind_ms=wind,
-                        solar_w_m2=solar,
-                        pressure_kpa=pressure,
-                        latitude_deg=self._lat,
-                        elevation_m=self._elev,
-                        day_of_year=dt0.timetuple().tm_yday,
-                        wind_sensor_height_m=self._wind_h,
-                    ),
-                    2,
-                )
-            except (ValueError, ZeroDivisionError):
-                continue
-            points.append({"start": dt0, "min": et0, "max": et0, "mean": et0})
-
-        if not points:
-            return 0
+        points = [
+            {
+                "start": dt_util.start_of_local_day(day),
+                "min": value,
+                "max": value,
+                "mean": value,
+            }
+            for day, value in sorted(by_day.items())
+        ]
         metadata = {
             **mean_meta,
             "has_sum": False,
@@ -637,7 +682,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         }
         async_import_statistics(self.hass, metadata, points)
         _LOGGER.info(
-            "Iriy: %d Tage ET0 als Statistik nachgetragen (%s)", len(points), stat_id
+            "Iriy: %d Tage ET0 als Statistik geschrieben (%s)", len(points), stat_id
         )
         return len(points)
 
@@ -790,13 +835,23 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     @callback
     def _handle_midnight(self, now: datetime) -> None:
-        """Tag abschliessen: kanonischen ET0-Tageswert bilden, Tag zuruecksetzen."""
-        et0 = self._compute_daily()
-        if et0 is not None:
-            self.et0_daily = round(et0, 2)
-        if not self._hourly and et0 is not None:
-            # Ohne Sub-Tagesspur die Buckets einmal taeglich fuettern.
-            self._apply_to_zones(et0, self._rain_day)
+        """Tag abschliessen und Tag zuruecksetzen.
+
+        Der KANONISCHE ET0-Tageswert wird kurz nach Mitternacht aus der
+        Recorder-STUNDENstatistik finalisiert (async_finalize_yesterday),
+        sobald die letzte Stunde verdichtet ist. Hier setzen wir nur einen
+        sofortigen Provisorisch-Wert, damit der Sensor nahtlos weiterlaeuft.
+        """
+        if self._hourly:
+            # Endstand der stuendlichen Spur = bester Sofortwert (gleiche
+            # Gleichung wie der Finalizer, nur evtl. minimale Live-Luecken).
+            self.et0_daily = round(self.et0_today, 2)
+        else:
+            et0 = self._compute_daily()
+            if et0 is not None:
+                self.et0_daily = round(et0, 2)
+                # Ohne Sub-Tagesspur die Buckets einmal taeglich fuettern.
+                self._apply_to_zones(et0, self._rain_day)
 
         for acc in self._day.values():
             acc.reset()
@@ -809,6 +864,33 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self.hass.async_create_task(self._async_save())
         self.async_set_updated_data(self._snapshot())
         _LOGGER.debug("Iriy: Tag abgeschlossen, ET0=%s mm", self.et0_daily)
+
+    async def async_finalize_yesterday(self) -> None:
+        """Gestrigen ET0-Tageswert aus der Recorder-Stundenstatistik bilden.
+
+        Das ist der KANONISCHE Wert: Summe von et0_hourly ueber die
+        stuendlichen Mittel des Recorders – zeit-gewichtet, lueckenrobust und
+        unabhaengig davon, ob Iriy durchlief. Schreibt den Wert auch in die
+        Langzeitstatistik (Upsert), damit Sensor und Verlaufsgraph stimmen.
+        Die heutige Defizit-Bilanz wird dabei NICHT angetastet.
+        """
+        today0 = dt_util.start_of_local_day()
+        yesterday0 = today0 - timedelta(days=1)
+        by_day = await self._et0_days_from_stats(yesterday0, today0)
+        yday = yesterday0.date()
+        if yday not in by_day:
+            _LOGGER.debug(
+                "Iriy: Finalisierung – keine Stundenstatistik fuer %s gefunden", yday
+            )
+            return
+        self.et0_daily = by_day[yday]
+        await self._import_et0_points({yday: by_day[yday]})
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+        _LOGGER.info("Iriy: ET0 gestern aus Statistik = %s mm", self.et0_daily)
+
+    async def _handle_finalize(self, now: datetime) -> None:
+        await self.async_finalize_yesterday()
 
     def _compute_daily(self) -> float | None:
         t = self._day["temp"]
@@ -835,6 +917,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             return None
 
     def _provisional_daily(self) -> float | None:
+        # Bei aktiver Sub-Tagesspur ist die laufende Summe selbst der beste
+        # provisorische Tageswert (gleiche Methode wie der finale Wert).
+        if self._hourly:
+            return self.et0_today
         return self._compute_daily()
 
     # --- Hilfen ---------------------------------------------------------

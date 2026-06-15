@@ -16,3 +16,6 @@ venv/
 # HA test artifacts
 .storage/
 *.log
+
+# Lokaler Claude-Agent-State (nicht ins Repo)
+.claude/
