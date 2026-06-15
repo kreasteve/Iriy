@@ -1,13 +1,17 @@
 {
   "domain": "iriy",
   "name": "Iriy – Smart Irrigation",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "documentation": "https://github.com/kreasteve/Iriy",
   "issue_tracker": "https://github.com/kreasteve/Iriy/issues",
-  "codeowners": ["@kreasteve"],
+  "codeowners": [
+    "@kreasteve"
+  ],
   "config_flow": true,
   "dependencies": [],
-  "after_dependencies": ["recorder"],
+  "after_dependencies": [
+    "recorder"
+  ],
   "integration_type": "hub",
   "iot_class": "calculated",
   "requirements": []

@@ -684,7 +684,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
         points = [
             {
-                "start": dt_util.start_of_local_day(day),
+                # "gestern"-Datierung: der ET0 von Tag D wird am FOLGETAG (D+1)
+                # um 0:00 geschrieben und gilt diesen ganzen Tag als "gestern"
+                # (am Tag X zeigt der Verlauf also ET0 von Tag X-1). DST-sicher
+                # ueber start_of_local_day(Folgedatum), nicht +24h.
+                "start": dt_util.start_of_local_day(day + timedelta(days=1)),
                 "min": value,
                 "max": value,
                 "mean": value,
@@ -858,11 +862,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     @callback
     def _handle_midnight(self, now: datetime) -> None:
-        """Punkt 00:00: gestrigen Tageswert SOFORT finalisieren (eindeutig dem
-        Vortag zugeordnet, datiert auf dessen lokale Mitternacht) und den Tag
-        zuruecksetzen. Der Wert kommt lueckenrobust aus der Recorder-Statistik.
+        """Punkt 00:00: ET0 des gerade beendeten Tages SOFORT finalisieren und
+        als heutigen "gestern"-Wert (datiert auf HEUTE 0:00) schreiben; dann den
+        Tag zuruecksetzen. Lueckenrobust aus der Recorder-Statistik.
         """
-        # Gestrigen Tageswert sofort um 00:00 schreiben (force, datiert Vortag).
+        # Gestrigen Tageswert sofort um 00:00 schreiben (force).
         self.hass.async_create_task(
             self.async_finalize_yesterday(force=True, refresh=True)
         )
@@ -887,9 +891,9 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     async def async_finalize_yesterday(
         self, force: bool = True, refresh: bool = True
     ) -> None:
-        """Gestrigen ET0-Tageswert aus der Recorder-Statistik bilden und – auf den
-        VORTAG datiert (dessen lokale Mitternacht) – in Sensor + Langzeitstatistik
-        schreiben (idempotenter Upsert). Die heutige Bilanz bleibt unberuehrt.
+        """Gestrigen ET0-Tageswert aus der Recorder-Statistik bilden und – als
+        "gestern"-Wert auf HEUTE 0:00 datiert (gilt den ganzen heutigen Tag) – in
+        Sensor + Langzeitstatistik schreiben (Upsert). Heutige Bilanz unberuehrt.
 
         Selbstheilend: mit force=False passiert nur etwas, wenn der Vortag noch
         nicht finalisiert wurde (Marker _last_finalized_day). So holt jeder
