@@ -33,8 +33,8 @@ muss – und steuert das später automatisch (Ventile, Strategien).
 
 | Entität | Bedeutung |
 |---|---|
-| `sensor.iriy_et0_daily` | kanonischer ET₀-Tageswert [mm/Tag] (+ Diagnose-Attribute) |
-| `sensor.iriy_et0_today` | heute bisher aufsummiert [mm] |
+| `sensor.iriy_et0_gestern` | kanonischer ET₀-Tageswert [mm/Tag] – trägt die korrekt datierte Tageshistorie |
+| `sensor.iriy_et0_heute` | heute bisher aufsummiert [mm] |
 | `sensor.iriy_et0_rate` | aktuelle ET-Rate [mm/h] |
 | `sensor.iriy_<zone>_defizit` | Wasserdefizit der Zone [mm] |
 | `sensor.iriy_<zone>_laufzeit` | nötige Bewässerungszeit [min] |
@@ -161,7 +161,7 @@ days_to_show: 14
 stat_types:
   - mean
 entities:
-  - sensor.iriy_et0_tag
+  - sensor.iriy_et0_gestern   # entity_id je nach HA-Sprache (engl.: ..._yesterday)
 ```
 
 Ein kombiniertes **Wetter**-Diagramm (Sonne, Wind, Regen) mit zwei Achsen geht mit
