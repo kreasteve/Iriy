@@ -35,12 +35,14 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = [
         IriyValueSensor(
-            # Normaler MEASUREMENT-Sensor: HA zeichnet Verlauf + Tagesstatistik
-            # SELBST auf. Der Zustand ist am Tag X konstant = ET0(X-1) (um 0:00
-            # gesetzt), also ergibt sich die korrekt datierte "gestern"-Serie
-            # automatisch – kein eigener Import, keine manuelle Datierung.
+            # KEIN state_class: "ET0 gestern" ist ein am Tagesende berechneter
+            # TAGESWERT, kein Live-Messwert. HA soll ihn NICHT selbst aufzeichnen
+            # (das waere "gestern"-verschoben). Die Tageshistorie kommt allein aus
+            # async_import_statistics, datiert auf den jeweils abgedeckten Tag
+            # (eigener Tag). Kosmetik: HA zeigt dafuer einen "no_state_class"-Hinweis
+            # in Entwicklerwerkzeuge -> Statistiken (rein informativ).
             coordinator, entry, "et0_daily", "mm", "mdi:water-percent",
-            lambda d: d.et0_daily, _et0_attrs, SensorStateClass.MEASUREMENT,
+            lambda d: d.et0_daily, _et0_attrs, None,
         ),
         IriyValueSensor(
             coordinator, entry, "et0_today", "mm", "mdi:counter",
