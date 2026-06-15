@@ -148,13 +148,15 @@ pytest tests/ -v
 Ein kombiniertes Wochen-Diagramm (Sonne, Wind, Regen, ET₀ in *einem* Chart mit
 zwei Achsen) geht am einfachsten mit der
 **[ApexCharts-Card](https://github.com/RomRider/apexcharts-card)** (über HACS
-installieren). Die Werte kommen aus der **Langzeitstatistik**, bleiben also über
-die ~10-Tage-Löschung der Rohdaten hinaus erhalten.
+installieren). ET₀ kommt aus der **Langzeitstatistik** (dauerhaft, via Iriy-Import),
+die Wetter-Serien aus der **Roh-History** per `group_by` (~letzte 10 Tage).
 
-> Ersetze die `sensor.*`-IDs durch deine echten Entitäten (Entwicklerwerkzeuge →
-> Zustände). Die ET₀-Entity heißt je nach Anlage `sensor.iriy_et0_daily` (evtl.
-> auch `…_tag`/`…_gestern` – einfach kurz nachsehen). Die Wetter-Sensoren
-> brauchen eine `state_class`, damit HA Tagesstatistiken bildet.
+> **Entitäten:** ET₀ = `sensor.iriy_et0_tag` (heißt bei dieser Anlage so – im
+> Zweifel in *Entwicklerwerkzeuge → Zustände* prüfen). Für Solar/Wind/Regen lesen
+> wir bewusst per `group_by` aus der Roh-History statt aus der Tages-Langzeit­
+> statistik – denn nicht jede Station erzeugt für diese Sensoren eine stündliche/
+> tägliche LTS (bei GW3000A/WS90 fehlt sie aktuell). Passe die `sensor.gw3000a_*`-
+> IDs an deine Station an.
 
 ```yaml
 type: custom:apexcharts-card
@@ -176,26 +178,26 @@ yaxis:
     apex_config:
       title: { text: "W/m² · m/s" }
 series:
-  - entity: sensor.iriy_et0_daily        # ET₀ mm/Tag (MEASUREMENT) → max
+  - entity: sensor.iriy_et0_tag               # ET₀ mm/Tag – LTS via Iriy-Import
     name: ET₀
     type: column
     yaxis_id: mm
     statistics: { type: max, period: day }
-  - entity: sensor.DEIN_DAILY_RAIN       # Regen mm (TOTAL_INCREASING) → sum
+  - entity: sensor.gw3000a_daily_rain_piezo   # Regen-Tageszähler → Tagesmaximum
     name: Regen
     type: column
     yaxis_id: mm
-    statistics: { type: sum, period: day }
-  - entity: sensor.DEINE_SOLAR           # Globalstrahlung W/m² → mean
+    group_by: { func: max, duration: 1d }
+  - entity: sensor.gw3000a_solar_radiation    # Globalstrahlung W/m²
     name: Solar
     type: line
     yaxis_id: env
-    statistics: { type: mean, period: day }
-  - entity: sensor.DEIN_WIND             # Wind m/s → mean
+    group_by: { func: avg, duration: 1d }
+  - entity: sensor.gw3000a_wind_speed         # Wind
     name: Wind
     type: line
     yaxis_id: env
-    statistics: { type: mean, period: day }
+    group_by: { func: avg, duration: 1d }
 ```
 
 **Wichtig:** Bei top-level `yaxis:` *nicht* zusätzlich `yaxis` in `apex_config`

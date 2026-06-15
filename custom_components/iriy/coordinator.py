@@ -542,29 +542,40 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 present,
             )
             return {}
-        try:
-            rows = await get_instance(self.hass).async_add_executor_job(
-                statistics_during_period,
-                self.hass,
-                start_local,
-                end_local,
-                ids,
-                "hour",
-                None,
-                {"mean"},
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Iriy: Stundenstatistik-Lesen fehlgeschlagen: %s", err)
-            return {}
+        # Stundenstatistik bevorzugt; manche Installationen liefern dafuer aber
+        # NICHTS (nur 5-Minuten-Kurzzeitstatistik vorhanden, keine stuendliche
+        # Langzeitstatistik). Dann auf 5-Minuten zurueckfallen und selbst auf
+        # Stundenmittel verdichten. So funktioniert es auf beiden Welten.
+        rows: dict = {}
+        for period in ("hour", "5minute"):
+            try:
+                rows = await get_instance(self.hass).async_add_executor_job(
+                    statistics_during_period,
+                    self.hass,
+                    start_local,
+                    end_local,
+                    ids,
+                    period,
+                    None,
+                    {"mean"},
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Iriy: Statistik-Lesen (%s) fehlgeschlagen: %s", period, err
+                )
+                rows = {}
+            if any(rows.get(sid) for sid in ids):
+                _LOGGER.debug("Iriy: ET0 aus Statistik-Periode '%s'", period)
+                break
 
-        # Je Groesse eine zeitlich sortierte (ts, mean)-Reihe (mit Einheiten-
-        # Umrechnung wie im Live-Pfad).
-        series: dict[str, list[tuple[float, float]]] = {}
+        # Sample-Mittel je Groesse in UTC-Stundenbins verdichten
+        # (granularitaets-agnostisch: 'hour' -> 1 Wert/Stunde, '5minute' ->
+        # Mittel der ~12 Werte je Stunde), inkl. Einheiten-Umrechnung.
+        bins: dict[str, dict[int, list]] = {}
         for sid, vals in rows.items():
             role = roles.get(sid)
             if not role:
                 continue
-            pts: list[tuple[float, float]] = []
             for row in vals:
                 ts = row.get("start")
                 mean = row.get("mean")
@@ -577,9 +588,14 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                     val /= 3.6
                 elif role == "pressure" and self._pressure_unit == "hPa":
                     val /= 10.0
-                pts.append((float(ts), val))
-            pts.sort()
-            series[role] = pts
+                hts = int(ts // 3600) * 3600  # UTC-Stundenbeginn
+                acc = bins.setdefault(role, {}).setdefault(hts, [0.0, 0])
+                acc[0] += val
+                acc[1] += 1
+        series: dict[str, list[tuple[float, float]]] = {
+            role: sorted((h, total / cnt) for h, (total, cnt) in hrs.items())
+            for role, hrs in bins.items()
+        }
 
         # Ein einzelnes fehlendes Stunden-Sample wird per Carry-forward
         # ueberbrueckt, aber NICHT laenger – sonst wuerden bei echten Recorder-
