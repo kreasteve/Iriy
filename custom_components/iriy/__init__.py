@@ -17,7 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
-from .const import DEFAULT_BACKFILL_DAYS, DOMAIN, PLATFORMS
+from .const import DOMAIN, PLATFORMS
 from .coordinator import IriyCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,24 +25,15 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_RECALCULATE = "recalculate"
 SERVICE_RESET_BUCKET = "reset_bucket"
 SERVICE_ADD_WATER = "add_water"
-SERVICE_BACKFILL = "backfill"
 
 ATTR_ZONE = "zone"
 ATTR_MM = "mm"
-ATTR_DAYS = "days"
 
 _RESET_SCHEMA = vol.Schema({vol.Optional(ATTR_ZONE): cv.string})
 _ADD_WATER_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_ZONE): cv.string,
         vol.Required(ATTR_MM): vol.Coerce(float),
-    }
-)
-_BACKFILL_SCHEMA = vol.Schema(
-    {
-        vol.Optional(ATTR_DAYS, default=DEFAULT_BACKFILL_DAYS): vol.All(
-            vol.Coerce(int), vol.Range(min=0, max=365)
-        )
     }
 )
 
@@ -59,20 +50,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _register_services(hass)
 
-    # Bestehende Installation: die externe ET0-Statistik (iriy:et0_daily) aus
-    # der Recorder-History neu aufbauen (idempotenter Upsert – korrigiert
-    # frueher falsch gerechnete Tage) und den gestrigen Sensorwert nachziehen.
-    # Ohne die heutige Defizit-Bilanz anzutasten.
-    if coordinator.loaded_existing:
-        await coordinator.async_import_history_statistics(
-            coordinator.history_days or DEFAULT_BACKFILL_DAYS
-        )
-        await coordinator.async_finalize_yesterday()
-
-    # Historischen Import (Haken im Setup) EINMALIG ausfuehren, sobald die
-    # Entities registriert sind (nach dem Platform-Setup). Das Flag verhindert
-    # erneuten Import bei jedem Neustart; zum bewussten Auffrischen gibt es den
-    # Service iriy.backfill.
+    # EINMALIG beim ersten Einrichten: optional die letzten X Tage als Historie
+    # vorbefuellen (Haken im Setup). Das Flag verhindert erneutes Befuellen bei
+    # jedem Neustart. Danach zeichnet HA den "gestern"-Sensor selbst auf.
     if (
         coordinator.import_history
         and not coordinator.history_imported
@@ -83,6 +63,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if count:
             await coordinator.mark_history_imported()
+
+    # Aktuellen "gestern"-Wert setzen; ab hier fuehrt HA Verlauf + Statistik des
+    # Sensors voellig selbst (kein laufender Import noetig).
+    await coordinator.async_finalize_yesterday()
     return True
 
 
@@ -125,32 +109,15 @@ def _register_services(hass: HomeAssistant) -> None:
         for coord in _coordinators(hass):
             coord.add_water(zone, mm)
 
-    async def _backfill(call: ServiceCall) -> None:
-        days = call.data.get(ATTR_DAYS, DEFAULT_BACKFILL_DAYS)
-        for coord in _coordinators(hass):
-            await coord.async_backfill()
-            if days:
-                await coord.async_import_history_statistics(days)
-
-    hass.services.async_register(
-        DOMAIN, SERVICE_RECALCULATE, _recalculate
-    )
+    hass.services.async_register(DOMAIN, SERVICE_RECALCULATE, _recalculate)
     hass.services.async_register(
         DOMAIN, SERVICE_RESET_BUCKET, _reset_bucket, schema=_RESET_SCHEMA
     )
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_WATER, _add_water, schema=_ADD_WATER_SCHEMA
     )
-    hass.services.async_register(
-        DOMAIN, SERVICE_BACKFILL, _backfill, schema=_BACKFILL_SCHEMA
-    )
 
 
 def _unregister_services(hass: HomeAssistant) -> None:
-    for service in (
-        SERVICE_RECALCULATE,
-        SERVICE_RESET_BUCKET,
-        SERVICE_ADD_WATER,
-        SERVICE_BACKFILL,
-    ):
+    for service in (SERVICE_RECALCULATE, SERVICE_RESET_BUCKET, SERVICE_ADD_WATER):
         hass.services.async_remove(DOMAIN, service)

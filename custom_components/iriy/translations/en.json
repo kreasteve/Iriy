@@ -30,7 +30,7 @@
           "solar": "Global/solar radiation in W/m² (instantaneous).",
           "pressure": "Absolute (station) pressure — NOT the relative/sea-level value.",
           "rain": "Rain amount. For mode 'Cumulative (resets daily)' pick a daily rain counter.",
-          "import_history": "On setup, import ET0 for past days from the recorder into the history graph (as far back as data exists). Runs once; refresh later via the iriy.backfill service.",
+          "import_history": "On setup, prefill the last X days as ET0 history from the recorder (as far back as data exists). Runs ONLY once on setup; afterwards Home Assistant keeps the history itself.",
           "history_days": "How many past days to import (0 = none)."
         }
       }
@@ -75,7 +75,7 @@
           "solar": "Global/solar radiation in W/m² (instantaneous).",
           "pressure": "Absolute (station) pressure — NOT the relative/sea-level value.",
           "rain": "Rain amount. For mode 'Cumulative (resets daily)' pick a daily rain counter.",
-          "import_history": "Import past days when enabled (runs once). Use the iriy.backfill service to refresh.",
+          "import_history": "Only relevant on first setup: prefill the last X days once. Afterwards Home Assistant keeps the history itself.",
           "history_days": "How many past days to import (0 = none)."
         }
       },
@@ -120,16 +120,6 @@
       "name": "Recalculate",
       "description": "Force an immediate recomputation of ET0 and deficit."
     },
-    "backfill": {
-      "name": "Backfill from history",
-      "description": "Discard today's balance and rebuild it from the recorder history (yesterday's daily value + today's course). With days > 0, past days are also added as long-term ET0 statistics (as far back as data exists).",
-      "fields": {
-        "days": {
-          "name": "Days back",
-          "description": "How many past days to add as ET0 statistics (0 = only today/yesterday)."
-        }
-      }
-    },
     "reset_bucket": {
       "name": "Reset deficit",
       "description": "Reset the water deficit to 0.",
@@ -151,9 +141,6 @@
       "et0_daily": { "name": "ET0 (yesterday)" },
       "et0_today": { "name": "ET0 today" },
       "et0_rate": { "name": "ET0 rate" }
-    },
-    "button": {
-      "recalc_history": { "name": "Recalculate ET0 history" }
     }
   },
   "selector": {

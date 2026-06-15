@@ -30,7 +30,7 @@
           "solar": "Globalstrahlung in W/m² (Momentanwert).",
           "pressure": "Absoluter Luftdruck (Stationsdruck) – NICHT der relative/Meereshöhen-Wert.",
           "rain": "Regenmenge. Für den Modus 'Zähler (Reset täglich)' einen Tages-Regenzähler wählen.",
-          "import_history": "Beim Einrichten ET0 vergangener Tage aus dem Recorder in den Verlaufsgraphen importieren (so weit Daten vorhanden). Läuft einmalig; späteres Auffrischen über den Service iriy.backfill.",
+          "import_history": "Beim Einrichten die letzten X Tage als ET0-Verlauf aus dem Recorder vorbefüllen (so weit Daten vorhanden). Läuft NUR einmal beim Einrichten; danach führt Home Assistant den Verlauf selbst.",
           "history_days": "Wie viele vergangene Tage importieren (0 = keine)."
         }
       }
@@ -75,7 +75,7 @@
           "solar": "Globalstrahlung in W/m² (Momentanwert).",
           "pressure": "Absoluter Luftdruck (Stationsdruck) – NICHT der relative/Meereshöhen-Wert.",
           "rain": "Regenmenge. Für den Modus 'Zähler (Reset täglich)' einen Tages-Regenzähler wählen.",
-          "import_history": "Vergangene Tage importieren, wenn aktiviert (läuft einmalig). Zum Auffrischen den Service iriy.backfill nutzen.",
+          "import_history": "Nur relevant beim ersten Einrichten: die letzten X Tage einmalig vorbefüllen. Danach führt Home Assistant den Verlauf selbst.",
           "history_days": "Wie viele vergangene Tage importieren (0 = keine)."
         }
       },
@@ -120,16 +120,6 @@
       "name": "Neu berechnen",
       "description": "Erzwingt eine sofortige Neuberechnung von ET0 und Defizit."
     },
-    "backfill": {
-      "name": "History nachladen",
-      "description": "Verwirft die heutige Bilanz und baut sie aus der Recorder-History neu auf (gestriger Tageswert + heutiger Verlauf). Mit Tage > 0 werden vergangene Tage als ET0-Langzeitstatistik nachgetragen (soweit Daten vorhanden).",
-      "fields": {
-        "days": {
-          "name": "Tage rückwirkend",
-          "description": "Wie viele vergangene Tage als ET0-Statistik nachtragen (0 = nur heute/gestern)."
-        }
-      }
-    },
     "reset_bucket": {
       "name": "Defizit zurücksetzen",
       "description": "Setzt das Wasserdefizit auf 0.",
@@ -151,9 +141,6 @@
       "et0_daily": { "name": "ET0 (gestern)" },
       "et0_today": { "name": "ET0 heute" },
       "et0_rate": { "name": "ET0-Rate" }
-    },
-    "button": {
-      "recalc_history": { "name": "ET0-Verlauf neu berechnen" }
     }
   },
   "selector": {

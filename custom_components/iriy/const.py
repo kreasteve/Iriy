@@ -6,7 +6,7 @@ Konfiguration kommt aus dem Config-Flow (UI) und liegt im ConfigEntry.
 from __future__ import annotations
 
 DOMAIN = "iriy"
-PLATFORMS = ["sensor", "button"]
+PLATFORMS = ["sensor"]
 
 # --- Config-/Options-Schluessel ----------------------------------------
 # Standort

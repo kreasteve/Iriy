@@ -329,18 +329,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     # --- Backfill aus Recorder-History ----------------------------------
 
-    async def async_backfill(self) -> None:
-        """Service: heutige Spuren verwerfen und aus der History neu aufbauen."""
-        for acc in self._day.values():
-            acc.reset()
-        self.et0_today = 0.0
-        self.et0_rate = None
-        self._rain_day = 0.0
-        for zone in self.zones.values():
-            zone.etc_today = 0.0
-        await self._async_backfill()
-        self.async_set_updated_data(self._snapshot())
-
     async def _async_backfill(self) -> None:
         """Tagesbilanz aus der Recorder-History rekonstruieren (Warmstart).
 
@@ -492,18 +480,21 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         )
 
     async def async_import_history_statistics(self, days: int = 30) -> int:
-        """Vergangene Tage als ET0-Langzeitstatistik in den Tagessensor einspeisen.
+        """EINMALIGE Historie-Saat: vergangene "gestern"-Werte vorbefuellen.
 
-        Kanonische Methode: ET0 je Tag = Summe von et0_hourly ueber die
-        STUENDLICHEN Recorder-Statistiken (zeit-gewichtet + lueckenrobust,
-        FAO-56/ASCE-konform). Nur ABGESCHLOSSENE Tage (vor heute), idempotent
-        (Upsert in die Historie von sensor.iriy_et0_*).
+        ET0 je Tag = Summe von et0_hourly ueber die STUENDLICHEN Recorder-
+        Statistiken (zeit-gewichtet + lueckenrobust). Wichtig: der HEUTIGE Slot
+        wird BEWUSST AUSGELASSEN (Ende = gestern 0:00) – den fuellt ab jetzt die
+        HA-Eigen-Aufzeichnung des Sensors, damit es keine Doppel-Schreibung am
+        Grenztag gibt. So decken Saat (Vergangenheit) und Auto-Aufzeichnung
+        (ab heute) disjunkte Tage ab.
         """
         today0 = dt_util.start_of_local_day()
-        # start_of_local_day normalisiert auf lokale Mitternacht (auch ueber
-        # DST-Grenzen) -> der aelteste Tag ist vollstaendig, kein Teiltag.
-        start = dt_util.start_of_local_day(today0 - timedelta(days=max(1, int(days))))
-        by_day = await self._et0_days_from_stats(start, today0)
+        # start/Ende auf lokale Mitternacht normalisiert (DST-sicher). Ende =
+        # gestern 0:00 -> heutiger Slot bleibt der Auto-Aufzeichnung ueberlassen.
+        start = dt_util.start_of_local_day(today0 - timedelta(days=max(2, int(days) + 1)))
+        end = today0 - timedelta(days=1)
+        by_day = await self._et0_days_from_stats(start, end)
         return await self._import_et0_points(by_day)
 
     async def _et0_days_from_stats(
@@ -649,14 +640,14 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         return {d: round(v, 2) for d, v in by_day.items()}
 
     async def _import_et0_points(self, by_day: dict) -> int:
-        """{date: et0_mm} als korrekt datierte Tagesstatistik IN DIE ENTITAET
-        sensor.iriy_et0_* schreiben (idempotenter Upsert).
+        """{date: et0_mm} als "gestern"-datierte Tagesstatistik in die Entitaet
+        sensor.iriy_et0_* schreiben (Upsert). NUR fuer die einmalige Historie-Saat.
 
-        Funktioniert sauber, weil die "gestern"-Entitaet KEIN state_class hat
-        (siehe sensor.py): HA zeichnet sie also nicht selbst auf, es gibt keine
-        Kollision, und der Wert von Tag D liegt korrekt auf Tag D. So bekommt
-        genau die Entitaet, die der Nutzer ansieht, ihre richtige Historie –
-        beliebig viele Tage zurueck (Button / Finalizer).
+        Jeder ET0 von Tag D wird auf D+1 0:00 gestempelt (am Tag X zeigt der
+        Verlauf ET0 von X-1) – passt zu dem, was HA per Auto-Aufzeichnung des
+        Sensors ohnehin produziert. Der HEUTIGE Slot wird vom Aufrufer
+        ausgelassen (siehe async_import_history_statistics), damit es keine
+        Doppel-Schreibung mit der laufenden Auto-Aufzeichnung gibt.
         """
         if not by_day or "recorder" not in self.hass.config.components:
             return 0
@@ -891,14 +882,13 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     async def async_finalize_yesterday(
         self, force: bool = True, refresh: bool = True
     ) -> None:
-        """Gestrigen ET0-Tageswert aus der Recorder-Statistik bilden und – als
-        "gestern"-Wert auf HEUTE 0:00 datiert (gilt den ganzen heutigen Tag) – in
-        Sensor + Langzeitstatistik schreiben (Upsert). Heutige Bilanz unberuehrt.
+        """Sensor-Zustand "ET0 gestern" auf den ET0 des Vortags setzen (lueckenrobust
+        aus der Recorder-Statistik). HA zeichnet Verlauf + Tagesstatistik des Sensors
+        SELBST auf – kein eigener Import noetig. Heutige Bilanz bleibt unberuehrt.
 
-        Selbstheilend: mit force=False passiert nur etwas, wenn der Vortag noch
-        nicht finalisiert wurde (Marker _last_finalized_day). So holt jeder
-        Koordinator-Tick einen ausgefallenen 00:00-Lauf nach – unabhaengig von
-        einem einzelnen Trigger.
+        Selbstheilend: mit force=False nur, wenn der Vortag noch nicht gesetzt wurde
+        (Marker _last_finalized_day) – so holt jeder Koordinator-Tick einen
+        ausgefallenen 00:00-Lauf nach.
         """
         today0 = dt_util.start_of_local_day()
         yesterday0 = today0 - timedelta(days=1)
@@ -909,14 +899,13 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         if yday not in by_day:
             _LOGGER.debug("Iriy: %s noch nicht finalisierbar (keine Statistik)", yday)
             return
+        # NUR den Sensor-Zustand setzen – HA fuehrt Verlauf + Statistik selbst.
         self.et0_daily = by_day[yday]
-        wrote = await self._import_et0_points({yday: by_day[yday]})
-        if wrote:  # Marker erst setzen, wenn die Statistik wirklich geschrieben ist
-            self._last_finalized_day = yday.isoformat()
+        self._last_finalized_day = yday.isoformat()
         await self._async_save()
         if refresh:
             self.async_set_updated_data(self._snapshot())
-        _LOGGER.info("Iriy: Tageswert %s = %s mm geschrieben", yday, self.et0_daily)
+        _LOGGER.info("Iriy: ET0 gestern = %s mm (Tag %s)", self.et0_daily, yday)
 
     def _compute_daily(self) -> float | None:
         t = self._day["temp"]
