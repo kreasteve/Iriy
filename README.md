@@ -38,6 +38,7 @@ muss – und steuert das später automatisch (Ventile, Strategien).
 | `sensor.iriy_et0_rate` | aktuelle ET-Rate [mm/h] |
 | `sensor.iriy_<zone>_defizit` | Wasserdefizit der Zone [mm] |
 | `sensor.iriy_<zone>_laufzeit` | nötige Bewässerungszeit [min] |
+| `button.iriy_et0_verlauf_neu_berechnen` | ET₀-Verlauf der letzten Tage neu berechnen (idempotenter Upsert) |
 
 ---
 

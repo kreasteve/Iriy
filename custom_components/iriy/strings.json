@@ -151,6 +151,9 @@
       "et0_daily": { "name": "ET0 (yesterday)" },
       "et0_today": { "name": "ET0 today" },
       "et0_rate": { "name": "ET0 rate" }
+    },
+    "button": {
+      "recalc_history": { "name": "Recalculate ET0 history" }
     }
   },
   "selector": {
