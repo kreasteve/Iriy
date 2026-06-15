@@ -59,10 +59,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _register_services(hass)
 
-    # Bestehende Installation: gestrigen Tageswert aus der Recorder-
-    # Stundenstatistik nachziehen (korrigiert frueher zu hoch gerechnete,
-    # count-gewichtete Werte) – ohne die heutige Defizit-Bilanz anzutasten.
+    # Bestehende Installation: die externe ET0-Statistik (iriy:et0_daily) aus
+    # der Recorder-History neu aufbauen (idempotenter Upsert – korrigiert
+    # frueher falsch gerechnete Tage) und den gestrigen Sensorwert nachziehen.
+    # Ohne die heutige Defizit-Bilanz anzutasten.
     if coordinator.loaded_existing:
+        await coordinator.async_import_history_statistics(
+            coordinator.history_days or DEFAULT_BACKFILL_DAYS
+        )
         await coordinator.async_finalize_yesterday()
 
     # Historischen Import (Haken im Setup) EINMALIG ausfuehren, sobald die

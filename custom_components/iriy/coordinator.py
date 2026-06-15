@@ -649,13 +649,30 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             by_day[day] = by_day.get(day, 0.0) + max(e, 0.0)
         return {d: round(v, 2) for d, v in by_day.items()}
 
+    @property
+    def et0_statistic_id(self) -> str:
+        """ID der kanonischen ET0-Tagesstatistik (extern).
+
+        Vorhersagbar fuer Dashboard-YAML; bei mehreren Iriy-Instanzen muesste
+        hier spaeter differenziert werden.
+        """
+        return f"{DOMAIN}:et0_daily"
+
     async def _import_et0_points(self, by_day: dict) -> int:
-        """{date: et0_mm} als Langzeitstatistik in sensor.iriy_et0_* schreiben."""
+        """{date: et0_mm} als EXTERNE Langzeitstatistik schreiben.
+
+        Bewusst eine EXTERNE Statistik (eigene ID mit ':' , Quelle = Domain),
+        NICHT der Live-Sensor: sie gehoert komplett Iriy, ist korrekt datiert
+        (Wert von Tag D liegt auf Tag D – nicht um einen Tag verschoben wie der
+        'gestern'-Sensor), kollidiert NICHT mit dessen Eigen-Aufzeichnung und
+        ist beliebig ueberschreibbar (idempotenter Upsert). Das ist der
+        kanonische, neu rechenbare ET0-Verlauf.
+        """
         if not by_day or "recorder" not in self.hass.config.components:
             return 0
         try:
             from homeassistant.components.recorder.statistics import (
-                async_import_statistics,
+                async_add_external_statistics,
             )
         except ImportError:
             return 0
@@ -665,18 +682,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             mean_meta: dict = {"mean_type": StatisticMeanType.ARITHMETIC}
         except ImportError:  # aeltere HA-Versionen
             mean_meta = {"has_mean": True}
-
-        from homeassistant.helpers import entity_registry as er
-
-        reg = er.async_get(self.hass)
-        stat_id = reg.async_get_entity_id(
-            "sensor", DOMAIN, f"{self.entry.entry_id}_et0_daily"
-        )
-        if not stat_id:
-            _LOGGER.warning(
-                "Iriy: ET0-Tagessensor noch nicht registriert – Statistik spaeter"
-            )
-            return 0
 
         points = [
             {
@@ -690,15 +695,16 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         metadata = {
             **mean_meta,
             "has_sum": False,
-            "name": None,
-            "source": "recorder",
-            "statistic_id": stat_id,
-            "unit_class": None,
+            "name": f"Iriy ET0 (Tag) – {self.entry.title}",
+            "source": DOMAIN,
+            "statistic_id": self.et0_statistic_id,
             "unit_of_measurement": "mm",
         }
-        async_import_statistics(self.hass, metadata, points)
+        async_add_external_statistics(self.hass, metadata, points)
         _LOGGER.info(
-            "Iriy: %d Tage ET0 als Statistik geschrieben (%s)", len(points), stat_id
+            "Iriy: %d Tage ET0 als externe Statistik (%s)",
+            len(points),
+            self.et0_statistic_id,
         )
         return len(points)
 
@@ -858,15 +864,13 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         sobald die letzte Stunde verdichtet ist. Hier setzen wir nur einen
         sofortigen Provisorisch-Wert, damit der Sensor nahtlos weiterlaeuft.
         """
-        if self._hourly:
-            # Endstand der stuendlichen Spur = bester Sofortwert (gleiche
-            # Gleichung wie der Finalizer, nur evtl. minimale Live-Luecken).
-            self.et0_daily = round(self.et0_today, 2)
-        else:
+        # Den kanonischen Tageswert setzt kurz darauf async_finalize_yesterday()
+        # aus der Statistik – hier KEIN Provisorium (vermeidet den sichtbaren
+        # Tagesbruch 00:00 -> 00:20). Ohne Sub-Tagesspur trotzdem das Defizit
+        # einmal taeglich fuettern.
+        if not self._hourly:
             et0 = self._compute_daily()
             if et0 is not None:
-                self.et0_daily = round(et0, 2)
-                # Ohne Sub-Tagesspur die Buckets einmal taeglich fuettern.
                 self._apply_to_zones(et0, self._rain_day)
 
         for acc in self._day.values():

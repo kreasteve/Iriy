@@ -145,18 +145,29 @@ pytest tests/ -v
 
 ## Dashboard: 7-Tage-Diagramm
 
-Ein kombiniertes Wochen-Diagramm (Sonne, Wind, Regen, ET₀ in *einem* Chart mit
-zwei Achsen) geht am einfachsten mit der
-**[ApexCharts-Card](https://github.com/RomRider/apexcharts-card)** (über HACS
-installieren). ET₀ kommt aus der **Langzeitstatistik** (dauerhaft, via Iriy-Import),
-die Wetter-Serien aus der **Roh-History** per `group_by` (~letzte 10 Tage).
+Iriy schreibt den kanonischen ET₀-Tagesverlauf als **externe Statistik
+`iriy:et0_daily`** — korrekt datiert (Wert von Tag D liegt auf Tag D), ein Wert
+pro Tag, von Iriy jederzeit neu rechenbar (nicht der zeitlich verschobene Roh-
+Verlauf des „gestern"-Sensors). Den zeigst du am saubersten mit einer
+**Statistik-Karte** (Bordmittel, keine HACS-Karte nötig):
 
-> **Entitäten:** ET₀ = `sensor.iriy_et0_tag` (heißt bei dieser Anlage so – im
-> Zweifel in *Entwicklerwerkzeuge → Zustände* prüfen). Für Solar/Wind/Regen lesen
-> wir bewusst per `group_by` aus der Roh-History statt aus der Tages-Langzeit­
-> statistik – denn nicht jede Station erzeugt für diese Sensoren eine stündliche/
-> tägliche LTS (bei GW3000A/WS90 fehlt sie aktuell). Passe die `sensor.gw3000a_*`-
-> IDs an deine Station an.
+```yaml
+type: statistics-graph
+title: ET₀ pro Tag
+chart_type: bar
+period: day
+days_to_show: 14
+stat_types:
+  - mean
+statistics:
+  - iriy:et0_daily
+```
+
+Ein kombiniertes **Wetter**-Diagramm (Sonne, Wind, Regen) mit zwei Achsen geht mit
+der **[ApexCharts-Card](https://github.com/RomRider/apexcharts-card)** (über HACS).
+Die Wetter-Serien lesen wir per `group_by` aus der **Roh-History** (~letzte 10 Tage)
+— denn nicht jede Station erzeugt für diese Sensoren eine Tages-Langzeitstatistik
+(bei GW3000A/WS90 fehlt sie). Passe die `sensor.gw3000a_*`-IDs an deine Station an.
 
 ```yaml
 type: custom:apexcharts-card
@@ -165,24 +176,19 @@ span:
   end: day
 header:
   show: true
-  title: Wetter & ET₀ (7 Tage)
+  title: Wetter (7 Tage)
 yaxis:
   - id: mm
     min: 0
     decimals: 1
     apex_config:
-      title: { text: mm }
+      title: { text: "Regen mm" }
   - id: env
     opposite: true            # rechte Achse
     min: 0
     apex_config:
       title: { text: "W/m² · m/s" }
 series:
-  - entity: sensor.iriy_et0_tag               # ET₀ mm/Tag – LTS via Iriy-Import
-    name: ET₀
-    type: column
-    yaxis_id: mm
-    statistics: { type: max, period: day }
   - entity: sensor.gw3000a_daily_rain_piezo   # Regen-Tageszähler → Tagesmaximum
     name: Regen
     type: column
