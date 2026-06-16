@@ -285,6 +285,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._auto_hour = int(self._opt(CONF_AUTO_HOUR, DEFAULT_AUTO_HOUR))
         self._rain_skip = float(self._opt(CONF_RAIN_SKIP_MM, DEFAULT_RAIN_SKIP_MM))
         self._weather = self._opt(CONF_WEATHER_ENTITY) or None
+        self._forecast_today_mm: float | None = None  # zuletzt geholte Tagesvorhersage
 
         # Akkumulatoren: einer pro Spur (Tag bleibt bis Mitternacht, Intervall
         # wird nach jedem Tick geleert).
@@ -344,6 +345,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             "hour": self._auto_hour,
             "rain_skip_mm": self._rain_skip,
             "weather_entity": self._auto_weather_entity(),
+            "forecast_today_mm": self._forecast_today_mm,
         }
 
     @property
@@ -939,6 +941,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # (Defizit/gegossen kommen jetzt aus der Flow-Verifikation nach jedem
         # Lauf bzw. aus dem Kommando – nicht mehr aus dem driftenden Tageszaehler.)
         self._reset_interval()
+        # Tagesvorhersage fuer die Anzeige aktualisieren (guenstig, je Tick einmal).
+        self._forecast_today_mm = await self._forecast_today_rain()
         await self._async_save()
         return self._snapshot()
 
@@ -1124,7 +1128,14 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         except (ValueError, TypeError):
             return 0.0
 
-    async def _async_auto_irrigate(self, now: datetime | None = None) -> None:
+    async def async_run_auto(self) -> None:
+        """Automatik-Entscheidung SOFORT ausloesen (Panel-Knopf „Jetzt pruefen"),
+        auch wenn die zeitgesteuerte Automatik (noch) aus ist – giesst echt."""
+        await self._async_auto_irrigate(force=True)
+
+    async def _async_auto_irrigate(
+        self, now: datetime | None = None, force: bool = False
+    ) -> None:
         """Automatik (HYBRID) – pro Zone mit Ventil entscheiden:
 
         Giessen, wenn Defizit >= Gieß-Schwelle ODER seit >= interval_days nicht
@@ -1133,11 +1144,12 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         um einen Tag verschoben und in der Tabelle als "fc_rain" vermerkt. Erreicht
         das Defizit den Max-Wert (Welkepunkt), wird IMMER gegossen (Forecast egal).
         """
-        if not self._auto:
+        if not self._auto and not force:
             return
         today = (now or dt_util.now()).date()
         today_iso = today.isoformat()
         rain_fc = await self._forecast_today_rain()
+        self._forecast_today_mm = rain_fc
         for zone in self.zones.values():
             if not zone.valve:
                 continue

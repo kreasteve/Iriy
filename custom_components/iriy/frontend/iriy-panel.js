@@ -182,7 +182,48 @@ class IriyPanel extends HTMLElement {
     } else if (action === "wunit") {
       this._wunit = el.dataset.unit;
       this._render();
+    } else if (action === "toggle-auto") {
+      this._toggleAuto(el.dataset.enabled === "1");
+    } else if (action === "run-auto") {
+      this._runAuto();
     }
+  }
+
+  async _toggleAuto(enabled) {
+    this._busy = true;
+    this._render();
+    try {
+      await this._ws({
+        type: "iriy/auto/set",
+        entry_id: this._entryId,
+        enabled,
+      });
+      await this._afterMutation();
+    } catch (e) {
+      this._error =
+        "Automatik schalten fehlgeschlagen: " + (e.message || e.code || e);
+    }
+    this._busy = false;
+    this._render();
+  }
+
+  async _runAuto() {
+    if (
+      !confirm(
+        "Automatik jetzt prüfen?\nZonen, deren Bedingungen erfüllt sind (und für die kein Regen erwartet wird), werden JETZT gegossen."
+      )
+    )
+      return;
+    this._busy = true;
+    this._render();
+    try {
+      await this._ws({ type: "iriy/auto/run", entry_id: this._entryId });
+      await this._afterMutation();
+    } catch (e) {
+      this._error = "Prüfen fehlgeschlagen: " + (e.message || e.code || e);
+    }
+    this._busy = false;
+    this._render();
   }
 
   async _irrigate(name) {
@@ -382,14 +423,47 @@ class IriyPanel extends HTMLElement {
 
   _autoLine(auto) {
     if (!auto) return "";
-    if (!auto.enabled)
-      return `<div class="auto off">⏸ Automatik aus – gießt nur manuell (in den Einstellungen aktivierbar)</div>`;
     const hh = String(auto.hour).padStart(2, "0");
-    const w = auto.weather_entity ? ` · Forecast: ${ESC(auto.weather_entity)}` : "";
-    return `<div class="auto on">✅ Automatik aktiv – täglich ${hh}:00 Uhr · Regen-Sperre ab ${NUM(
-      auto.rain_skip_mm,
-      1
-    )} mm${w}</div>`;
+    const fc =
+      auto.forecast_today_mm != null
+        ? `🌧️ Vorhersage heute: <b>${NUM(auto.forecast_today_mm, 1)} mm</b> Regen`
+        : `🌧️ Vorhersage: keine Daten`;
+    const onoff = auto.enabled
+      ? `<button class="mini on" data-action="toggle-auto" data-enabled="0">Automatik AN</button>`
+      : `<button class="mini" data-action="toggle-auto" data-enabled="1">Automatik AUS</button>`;
+    const check = `<button class="mini ghost" data-action="run-auto" ${
+      this._busy ? "disabled" : ""
+    }>Jetzt prüfen</button>`;
+    const desc = auto.enabled
+      ? `täglich ${hh}:00 Uhr · Regen-Sperre ab ${NUM(auto.rain_skip_mm, 1)} mm`
+      : `gießt nur manuell`;
+    return `<div class="auto ${auto.enabled ? "on" : "off"}">
+        <div class="autorow">${onoff} ${check}<span class="muted">${desc}</span></div>
+        <div class="autofc">${fc}</div>
+      </div>`;
+  }
+
+  _todayIso() {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}-${String(n.getDate()).padStart(2, "0")}`;
+  }
+
+  // Klartext-Status des heutigen Tages je Zone (für die Zonen-Karte).
+  _zoneTodayStatus(z, inst) {
+    const rec = ((inst.zone_history || {})[z.name] || {})[this._todayIso()] || {};
+    if (rec.note === "fc_rain") {
+      const mm = rec.fc_rain_mm != null ? `${NUM(rec.fc_rain_mm, 1)} mm` : "Regen";
+      return `🌧️ Heute nicht gegossen – Regen erwartet (${mm})`;
+    }
+    if (z.gegossen_l > 0) return `💧 Heute gegossen: ${NUM(z.gegossen_l, 1)} L`;
+    if (inst.auto && inst.auto.enabled)
+      return `⏳ Heute noch nicht gegossen (Automatik prüft ${String(
+        inst.auto.hour
+      ).padStart(2, "0")}:00)`;
+    return `Heute nicht gegossen`;
   }
 
   _dayShort(dateStr) {
@@ -633,7 +707,7 @@ class IriyPanel extends HTMLElement {
       </div>`;
   }
 
-  _zoneRow(z) {
+  _zoneRow(z, inst) {
     // Info-Zeile: bei Flächensteuerung Fläche statt Durchfluss.
     const info = [`Kc ${NUM(z.kc, 2)}`];
     if (z.by_area) info.push(`${NUM(z.area, 1)} m² (Fläche)`);
@@ -646,12 +720,21 @@ class IriyPanel extends HTMLElement {
     const badge = [`Defizit ${NUM(z.deficit)} mm`];
     if (z.runtime_minutes != null) badge.push(`${NUM(z.runtime_minutes, 0)} min`);
     if (z.liters_needed != null) badge.push(`${NUM(z.liters_needed, 1)} L`);
+    // Automatik-Schwelle/Intervall (nur wenn ein Ventil da ist – sonst kein Auto).
+    const autoInfo = z.valve
+      ? `Schwelle ${NUM(z.trigger_mm, 1)} mm${
+          z.interval_days > 0 ? ` · spät. alle ${z.interval_days} T` : ""
+        }`
+      : "kein Ventil – keine Automatik";
+    const status = z.valve ? this._zoneTodayStatus(z, inst) : "";
     return `
         <div class="zone">
           <div class="zinfo">
             <strong>${ESC(z.name)}</strong>
             <span class="muted">${info.join(" · ")}</span>
             <span class="badge">${badge.join(" · ")}</span>
+            <span class="muted auto-hint">${autoInfo}</span>
+            ${status ? `<span class="zstatus">${status}</span>` : ""}
           </div>
           <div class="zact">
             ${
@@ -674,7 +757,7 @@ class IriyPanel extends HTMLElement {
   _zones(inst) {
     const zones = inst.zones || [];
     const list = zones.length
-      ? zones.map((z) => this._zoneRow(z)).join("")
+      ? zones.map((z) => this._zoneRow(z, inst)).join("")
       : `<p class="muted">Noch keine Zonen angelegt.</p>`;
     return `
       <div class="card">
@@ -822,9 +905,17 @@ IriyPanel.styles = `
   .stat .val { font-size: 1.7rem; font-weight: 500; }
   .stat .val small { font-size: .9rem; color: var(--secondary-text-color); }
   .diag { margin-top: 10px; line-height: 1.5; }
-  .auto { margin-top: 8px; font-size: .82rem; padding: 6px 10px; border-radius: 8px; }
+  .auto { margin-top: 8px; font-size: .82rem; padding: 8px 10px; border-radius: 8px; }
   .auto.on { background: rgba(76,175,80,.12); color: var(--primary-text-color); }
   .auto.off { background: var(--secondary-background-color, #f1f1f1); color: var(--secondary-text-color); }
+  .autorow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .autofc { margin-top: 6px; }
+  .mini { border:1px solid var(--divider-color,#ccc); background: transparent; color: var(--primary-text-color);
+          padding: 3px 10px; border-radius: 12px; font-size:.78rem; cursor:pointer; }
+  .mini.on { background: #4caf50; color:#fff; border-color: transparent; }
+  .mini.ghost { color: var(--secondary-text-color); }
+  .zstatus { font-size:.8rem; margin-top:2px; }
+  .auto-hint { font-size:.74rem; }
   td.fc { color: #48c9b0; font-size: .76rem; white-space: nowrap; }
   .chart2 { width:100%; height:auto; display:block; }
   .chart2 .grid { stroke: var(--divider-color, #e0e0e0); stroke-width: 0.4; }

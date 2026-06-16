@@ -23,6 +23,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.loader import async_get_integration
 
 from .const import (
+    CONF_AUTO_IRRIGATE,
     CONF_ZONE_AREA,
     CONF_ZONE_BY_AREA,
     CONF_ZONE_CALC_LITERS,
@@ -68,6 +69,8 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, ws_overview)
         websocket_api.async_register_command(hass, ws_zone_save)
         websocket_api.async_register_command(hass, ws_zone_delete)
+        websocket_api.async_register_command(hass, ws_auto_set)
+        websocket_api.async_register_command(hass, ws_auto_run)
         frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
         await hass.http.async_register_static_paths(
             [StaticPathConfig(PANEL_STATIC_URL, frontend_dir, False)]
@@ -282,6 +285,53 @@ async def ws_zone_save(
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, CONF_ZONES: zones}
     )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/auto/set",
+        vol.Required("entry_id"): str,
+        vol.Required("enabled"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_auto_set(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Automatik global an/aus schalten (schreibt in options -> Reload)."""
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Adminrechte noetig")
+        return
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN:
+        connection.send_error(msg["id"], "not_found", "Instanz nicht gefunden")
+        return
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, CONF_AUTO_IRRIGATE: bool(msg["enabled"])}
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/auto/run",
+        vol.Required("entry_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_auto_run(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Automatik-Entscheidung SOFORT ausloesen („Jetzt pruefen") – giesst echt."""
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Adminrechte noetig")
+        return
+    coord = _coordinators(hass).get(msg["entry_id"])
+    if coord is None:
+        connection.send_error(msg["id"], "not_found", "Instanz nicht gefunden")
+        return
+    await coord.async_run_auto()
     connection.send_result(msg["id"], {"ok": True})
 
 
