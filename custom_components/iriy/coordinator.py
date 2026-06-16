@@ -1092,37 +1092,33 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             blocking=True,
         )
         _LOGGER.info("Iriy: Gieszen Zone %s -> %s %s", zone_name, topic, payload)
-        # Verbuchung: GERECHNET, wenn calc_liters gesetzt ist oder keine Messung
-        # moeglich (keine Flaeche, z. B. unzuverlaessiger Durchflussmesser am
-        # Tropfschlauch). Bei GEMESSENEN Zonen kommt Defizit/gegossen aus dem
-        # Flow-Integral der Verifikation unten (nicht aus dem kommandierten Wert).
-        if zone.calc_liters or zone.area <= 0:
-            if applied_mm:
-                zone.deficit = max(zone.deficit - applied_mm, 0.0)
-            if applied_l is not None:
-                zone.gegossen_l += applied_l
+        # Verbuchung: die KOMMANDIERTE Menge ist die Wahrheit. Bei quantitative
+        # limitiert das Ventil selbst auf die Liter (interner Meter stoppt); bei
+        # timed = Durchfluss×Zeit. Genauer als ein Flow-Integral (das bei kurzen
+        # Laeufen untercountet). Der Flow-Sensor dient nur zur BINAEREN Kontrolle.
+        if applied_mm:
+            zone.deficit = max(zone.deficit - applied_mm, 0.0)
+        if applied_l is not None:
+            zone.gegossen_l += applied_l
 
-        # Nach dem Lauf per flow-Sensor verifizieren, ob wirklich Wasser kam.
-        # Gemessene Zonen (Amberbaum): echte Liter aus dem Flow-Integral verbuchen.
-        # calc_liters-Zonen (Tropfschlauch): nur pruefen, ob flow>0 (sonst Warnung).
+        # Nach dem Lauf binaer pruefen, ob ueberhaupt Wasser floss (flow > 0).
         run_start = dt_util.utcnow()
-        measured = not zone.calc_liters and zone.area > 0
 
         @callback
-        def _verify_later(_now, zn=zone_name, rs=run_start, win=run_window_s, meas=measured):
-            self.hass.async_create_task(self._verify_run(zn, rs, win, meas))
+        def _verify_later(_now, zn=zone_name, rs=run_start, win=run_window_s):
+            self.hass.async_create_task(self._verify_run(zn, rs, win))
 
         async_call_later(self.hass, run_window_s, _verify_later)
         await self._async_save()
         self.async_set_updated_data(self._snapshot())
 
     async def _verify_run(
-        self, zone_name: str, run_start: datetime, window_s: float, measured: bool
+        self, zone_name: str, run_start: datetime, window_s: float
     ) -> None:
-        """Nach einem Giess-Lauf den flow-Sensor ueber [run_start, +window] aus
-        dem Recorder integrieren: liefert die ausgebrachten Liter (zeit-gewichtet)
-        und ob ueberhaupt Fluss war. Bei gemessenen Zonen Defizit/gegossen daraus
-        verbuchen; sonst nur „kein Fluss"-Warnung.
+        """Nach einem Giess-Lauf BINAER pruefen, ob ueberhaupt Wasser floss:
+        flow-Sensor ueber [run_start, +window] aus dem Recorder lesen, irgendein
+        Wert > 0 = geflossen. Bei keinem Fluss eine Warnung (Hahn zu / Ventil-
+        Problem). Aendert NICHTS an Defizit/gegossen (die kommen aus dem Kommando).
         """
         zone = self.zones.get(zone_name)
         if zone is None or not zone.valve:
@@ -1147,42 +1143,22 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Iriy: Flow-Verifikation fehlgeschlagen: %s", err)
             return
-        pts: list[tuple[datetime, float]] = []
+        flowed = False
         for s in data.get(flow_eid, []):
             try:
-                v = max(float(s.state), 0.0)  # m³/h
+                if float(s.state) > 0:
+                    flowed = True
+                    break
             except (ValueError, TypeError):
-                v = 0.0
-            pts.append((s.last_changed, v))
-        liters = 0.0
-        flowed = False
-        for i, (t, v) in enumerate(pts):
-            t2 = pts[i + 1][0] if i + 1 < len(pts) else end
-            if t < run_start:
-                t = run_start
-            dt_h = max((t2 - t).total_seconds(), 0.0) / 3600.0
-            liters += v * dt_h * 1000.0  # m³/h * h * 1000 = L
-            if v > 0:
-                flowed = True
-        if measured:
-            eff = zone.efficiency if zone.efficiency > 0 else 1.0
-            zone.gegossen_l += round(liters, 1)
-            if zone.area > 0:
-                zone.deficit = max(zone.deficit - (liters / zone.area) * eff, 0.0)
-            _LOGGER.info(
-                "Iriy: Zone %s – Flow-Integral %.1f L (geflossen=%s)",
-                zone_name,
-                liters,
-                flowed,
-            )
-        if not flowed:
+                continue
+        if flowed:
+            _LOGGER.info("Iriy: Zone %s – Fluss bestaetigt", zone_name)
+        else:
             _LOGGER.warning(
                 "Iriy: Zone %s – KEIN Fluss im Giess-Fenster erkannt "
                 "(Hahn zu / Ventil-Problem?)",
                 zone_name,
             )
-        await self._async_save()
-        self.async_set_updated_data(self._snapshot())
 
     def _apply_to_zones(self, et0_mm: float, rain_mm: float) -> None:
         for zone in self.zones.values():

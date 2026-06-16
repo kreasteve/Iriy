@@ -73,10 +73,14 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     # entfernen). Bricht den ?v=-Cache nach einem Update auf.
     from homeassistant.components import frontend
 
-    try:
-        frontend.async_remove_panel(hass, PANEL_URL_PATH)
-    except Exception:  # noqa: BLE001
-        pass
+    # Nur entfernen, wenn schon registriert – sonst loggt HA "Removing unknown
+    # panel" als Warnung.
+    _panels_key = getattr(frontend, "DATA_PANELS", "frontend_panels")
+    if PANEL_URL_PATH in hass.data.get(_panels_key, {}):
+        try:
+            frontend.async_remove_panel(hass, PANEL_URL_PATH)
+        except Exception:  # noqa: BLE001
+            pass
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=PANEL_URL_PATH,
