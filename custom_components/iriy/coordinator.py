@@ -683,125 +683,35 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         return {d: round(v, 2) for d, v in by_day.items()}
 
     async def _import_et0_points(self, by_day: dict) -> int:
-        """{date: et0_mm} als "eigener-Tag"-datierte Tagesstatistik in die
-        Entitaet sensor.iriy_et0_* schreiben (idempotenter Upsert).
+        """{date: et0_mm} (eigener Tag) in den Panel-Verlauf et0_recent spiegeln.
 
-        Jeder ET0 von Tag D liegt auf Tag D selbst (lokale Mitternacht). Berechnet
-        wird er am Tagesende (0:00 des Folgetags), datiert aber auf den gerade
-        beendeten Tag. Die Entitaet hat KEIN state_class -> HA zeichnet sie nicht
-        selbst auf, es gibt also keine Doppel-Schreibung; diese importierten
-        Punkte sind die alleinige Quelle der Tageshistorie.
+        Schreibt NICHT mehr in die Entitaet – deren Langzeitstatistik fuehrt HA
+        seit `state_class` selbst (aus dem Zustand). et0_recent ist die nach
+        eigenem Tag datierte Reihe fuers Iriy-Panel (per Jinja nicht aus der
+        Statistik lesbar, daher diese interne, persistierte Kopie).
         """
-        if not by_day or "recorder" not in self.hass.config.components:
+        if not by_day:
             return 0
-        try:
-            from homeassistant.components.recorder.statistics import (
-                async_import_statistics,
-            )
-        except ImportError:
-            return 0
-        try:
-            from homeassistant.components.recorder.models import StatisticMeanType
-
-            mean_meta: dict = {"mean_type": StatisticMeanType.ARITHMETIC}
-        except ImportError:  # aeltere HA-Versionen
-            mean_meta = {"has_mean": True}
-
-        from homeassistant.helpers import entity_registry as er
-
-        stat_id = er.async_get(self.hass).async_get_entity_id(
-            "sensor", DOMAIN, f"{self.entry.entry_id}_et0_daily"
-        )
-        if not stat_id:
-            _LOGGER.warning("Iriy: ET0-Tagessensor noch nicht registriert")
-            return 0
-
-        points = [
-            {
-                # Eigener-Tag-Datierung: ET0 von Tag D liegt auf Tag D selbst
-                # (lokale Mitternacht). Am Tag X zeigt der Verlauf den ET0 von X.
-                "start": dt_util.start_of_local_day(day),
-                "min": value,
-                "max": value,
-                "mean": value,
-            }
-            for day, value in sorted(by_day.items())
-        ]
-        metadata = {
-            **mean_meta,
-            "has_sum": False,
-            "name": None,
-            "source": "recorder",
-            "statistic_id": stat_id,
-            "unit_class": None,
-            "unit_of_measurement": "mm",
-        }
-        async_import_statistics(self.hass, metadata, points)
-        # Rollenden Verlauf fuer die Dashboard-Tabelle nachfuehren (Statistik ist
-        # die Wahrheit, aber per Jinja/Template nicht lesbar -> als Attribut spiegeln).
         for day, value in by_day.items():
             self.et0_recent[day.isoformat()] = value
         for old in sorted(self.et0_recent)[:-14]:  # nur die letzten 14 Tage halten
             del self.et0_recent[old]
-        _LOGGER.info(
-            "Iriy: %d Tage ET0 in die Entitaet geschrieben (%s)", len(points), stat_id
-        )
-        return len(points)
+        return len(by_day)
 
     async def async_sync_recent_from_stats(self, days: int = 14) -> None:
-        """et0_recent aus der EIGENEN Tagesstatistik zuruecklesen.
-
-        Die importierte Tagesstatistik ist die Wahrheit (und Quelle des
-        Diagramms). Beim Setup spiegeln wir die letzten Tage daraus in das
-        Attribut, damit die Dashboard-Tabelle sofort vollstaendig ist – auch
-        nach einem Upgrade, wo die einmalige Saat nicht erneut laeuft.
+        """Panel-Verlauf et0_recent (eigener Tag) aus der WETTER-Statistik neu
+        berechnen – robust und unabhaengig von der Entitaets-Statistik (die HA
+        seit state_class selbst fuehrt). Beim Setup aufgerufen, damit die
+        Tabelle sofort gefuellt ist.
         """
-        if "recorder" not in self.hass.config.components:
-            return
-        try:
-            from homeassistant.components.recorder import get_instance
-            from homeassistant.components.recorder.statistics import (
-                statistics_during_period,
-            )
-        except ImportError:
-            return
-        from homeassistant.helpers import entity_registry as er
-
-        stat_id = er.async_get(self.hass).async_get_entity_id(
-            "sensor", DOMAIN, f"{self.entry.entry_id}_et0_daily"
-        )
-        if not stat_id:
-            return
-        start = dt_util.start_of_local_day(
-            dt_util.start_of_local_day() - timedelta(days=max(1, int(days)))
-        )
-        end = dt_util.start_of_local_day() + timedelta(days=1)
-        try:
-            rows = await get_instance(self.hass).async_add_executor_job(
-                statistics_during_period,
-                self.hass,
-                start,
-                end,
-                {stat_id},
-                "day",
-                None,
-                {"mean"},
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Iriy: recent-Sync fehlgeschlagen: %s", err)
-            return
-        for row in rows.get(stat_id, []):
-            ts = row.get("start")
-            mean = row.get("mean")
-            if ts is None or mean is None:
-                continue
-            if ts > 1e12:  # ms -> s
-                ts /= 1000.0
-            day = dt_util.as_local(dt_util.utc_from_timestamp(ts)).date()
-            self.et0_recent[day.isoformat()] = round(float(mean), 2)
-        for old in sorted(self.et0_recent)[:-14]:
-            del self.et0_recent[old]
-        # Frischen Snapshot mit gefuelltem Verlauf veroeffentlichen.
+        # Nur befuellen, wenn der User die Historie wollte ("7 Tage / keine").
+        if self._import_history and self._history_days > 0:
+            n = max(1, int(self._history_days))
+            today0 = dt_util.start_of_local_day()
+            start = dt_util.start_of_local_day(today0 - timedelta(days=n))
+            by_day = await self._et0_days_from_stats(start, today0)
+            if by_day:
+                await self._import_et0_points(by_day)
         self.async_set_updated_data(self._snapshot())
         await self._async_save()
 
@@ -1221,10 +1131,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     async def async_finalize_yesterday(
         self, force: bool = True, refresh: bool = True
     ) -> None:
-        """Den ET0 des gestrigen (gerade beendeten) Tages bilden und – auf DIESEN
-        Tag datiert ("eigener Tag") – als Statistik-Punkt in die Entitaet schreiben
-        (Upsert). Setzt zugleich den Sensor-Zustand (letzter abgeschlossener Tag).
-        Da die Entitaet kein state_class hat, gibt es keine Doppel-Aufzeichnung.
+        """Den ET0 des gestrigen (gerade beendeten) Tages bilden und als
+        Sensor-Zustand setzen (= letzter abgeschlossener Tag). HA zeichnet die
+        Langzeitstatistik der Entitaet daraus selbst auf (state_class). Zusaetzlich
+        wird der Panel-Verlauf (et0_recent, eigener Tag) nachgefuehrt.
 
         Selbstheilend: mit force=False nur, wenn der Vortag noch nicht geschrieben
         wurde (Marker _last_finalized_day) – so holt jeder Koordinator-Tick einen
@@ -1240,10 +1150,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             _LOGGER.debug("Iriy: %s noch nicht finalisierbar (keine Statistik)", yday)
             return
         self.et0_daily = by_day[yday]
-        # ET0 von gestern auf SEINEN Tag datiert in die Statistik schreiben.
-        wrote = await self._import_et0_points({yday: by_day[yday]})
-        if wrote:
-            self._last_finalized_day = yday.isoformat()
+        # Zustand (et0_daily) -> HA fuehrt die Langzeitstatistik selbst (state_class).
+        # Hier nur den Panel-Verlauf (eigener Tag) nachfuehren.
+        await self._import_et0_points({yday: by_day[yday]})
+        self._last_finalized_day = yday.isoformat()
         await self._async_save()
         if refresh:
             self.async_set_updated_data(self._snapshot())
