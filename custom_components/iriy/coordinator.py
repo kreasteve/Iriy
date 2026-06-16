@@ -1092,12 +1092,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             blocking=True,
         )
         _LOGGER.info("Iriy: Gieszen Zone %s -> %s %s", zone_name, topic, payload)
-        # Verbuchung: die KOMMANDIERTE Menge ist die Wahrheit. Bei quantitative
-        # limitiert das Ventil selbst auf die Liter (interner Meter stoppt); bei
-        # timed = Durchfluss×Zeit. Genauer als ein Flow-Integral (das bei kurzen
-        # Laeufen untercountet). Der Flow-Sensor dient nur zur BINAEREN Kontrolle.
-        if applied_mm:
-            zone.deficit = max(zone.deficit - applied_mm, 0.0)
+        # Defizit wird hier NICHT abgezogen – die naechtliche Konsolidierung
+        # (_apply_daily_watering) zieht die TATSAECHLICH ausgebrachte Menge ab
+        # (erfasst manuell + Iriy, kein Doppelzaehlen). gegossen_l dient nur der
+        # Live-"heute"-Anzeige des von Iriy Kommandierten.
         if applied_l is not None:
             zone.gegossen_l += applied_l
 
@@ -1160,6 +1158,101 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 zone_name,
             )
 
+    async def _watered_for_day(
+        self, zone: "ZoneState", start: datetime, end: datetime
+    ) -> tuple[float, bool]:
+        """Aus dem flow-Sensor (m³/h) ableiten, wie viel an Tag [start,end) wirklich
+        ausgebracht wurde – erfasst auch MANUELLES Gieszen, weil es vom Ventil kommt.
+
+        - flow > 0 (zeit-gewichtet, carry-forward) -> Laufzeit + Volumen-Integral.
+        - calc_liters-Zone (Tropfschlauch, Meter unzuverlaessig): Liter aus
+          Laufzeit × Durchfluss × Flaeche (Modell).
+        - sonst (genauer Meter, z. B. Baum): Liter = Flow-Integral.
+        Nicht-numerische Stati (unavailable/unknown) zaehlen als 0 (begrenzt den
+        Carry-forward an den Flapping-Stellen des Geraets). Liefert (liter, geflossen).
+        """
+        if not zone.valve:
+            return 0.0, False
+        flow_eid = self._flow_entity(zone.valve)
+        if not flow_eid:
+            return 0.0, False
+        try:
+            from homeassistant.components.recorder import get_instance, history
+        except ImportError:
+            return 0.0, False
+        try:
+            data = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period, self.hass, start, end, flow_eid
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Iriy: Flow-History (%s) fehlgeschlagen: %s", flow_eid, err)
+            return 0.0, False
+        pts: list[tuple[datetime, float]] = []
+        for s in data.get(flow_eid, []):
+            try:
+                v = max(float(s.state), 0.0)
+            except (ValueError, TypeError):
+                v = 0.0
+            pts.append((s.last_changed, v))
+        runtime_s = 0.0
+        integral_l = 0.0
+        for i, (t, v) in enumerate(pts):
+            if v <= 0:
+                continue
+            t2 = pts[i + 1][0] if i + 1 < len(pts) else end
+            if t < start:
+                t = start
+            dt = max((t2 - t).total_seconds(), 0.0)
+            runtime_s += dt
+            integral_l += v * (dt / 3600.0) * 1000.0  # m³/h * h * 1000 = L
+        flowed = runtime_s > 0
+        if zone.calc_liters and zone.area > 0:
+            liters = zone.throughput * (runtime_s / 3600.0) * zone.area
+        else:
+            liters = integral_l
+        return round(liters, 1), flowed
+
+    async def _apply_daily_watering(
+        self, ended_iso: str, day_start: datetime, day_end: datetime
+    ) -> None:
+        """Tages-Snapshot: pro Zone die an [day_start,day_end) tatsaechlich
+        ausgebrachte Menge aus dem Ventil ableiten, vom Defizit abziehen (einmal
+        taeglich konsolidiert – erfasst manuell + Iriy) und die Tabellenzeile
+        (Defizit + gegossen) schreiben.
+        """
+        for zone in self.zones.values():
+            liters, _flowed = await self._watered_for_day(zone, day_start, day_end)
+            if liters > 0 and zone.area > 0:
+                eff = zone.efficiency if zone.efficiency > 0 else 1.0
+                zone.deficit = max(zone.deficit - (liters / zone.area) * eff, 0.0)
+            self.zone_recent.setdefault(zone.name, {})[ended_iso] = {
+                "deficit": round(zone.deficit, 2),
+                "gegossen_l": liters,
+            }
+        self._trim_recent()
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+
+    async def async_backfill_zone_history(self, days: int = 10) -> None:
+        """Rueckwirkend die letzten `days` Tage: pro Zone die ausgebrachte Menge
+        aus dem Ventil-Verlauf ableiten und in die Tabelle (gegossen) schreiben.
+        Defizit-Historie wird NICHT rekonstruiert (nur gegossen)."""
+        today0 = dt_util.start_of_local_day()
+        for i in range(1, max(1, int(days)) + 1):
+            d_start = dt_util.start_of_local_day(today0 - timedelta(days=i))
+            d_end = dt_util.start_of_local_day(today0 - timedelta(days=i - 1))
+            iso = d_start.date().isoformat()
+            for zone in self.zones.values():
+                if not zone.valve:
+                    continue
+                liters, flowed = await self._watered_for_day(zone, d_start, d_end)
+                if liters > 0 or flowed:
+                    rec = self.zone_recent.setdefault(zone.name, {}).setdefault(iso, {})
+                    rec["gegossen_l"] = liters
+        self._trim_recent()
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+
     def _apply_to_zones(self, et0_mm: float, rain_mm: float) -> None:
         for zone in self.zones.values():
             etc = et0_mm * zone.kc
@@ -1194,16 +1287,16 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             if et0 is not None:
                 self._apply_to_zones(et0, self._rain_day)
 
-        # Tabellen-Tageslog des gerade beendeten Tages festhalten (Regen + je
-        # Zone Defizit & gegossene Liter), dann auf 14 Tage begrenzen.
-        ended = (now - timedelta(days=1)).date().isoformat()
+        # Regen-Tageslog des gerade beendeten Tages festhalten.
+        today0 = dt_util.start_of_local_day(now)
+        day_start = today0 - timedelta(days=1)
+        ended = day_start.date().isoformat()
         self.rain_recent[ended] = round(self._rain_day, 2)
-        for zone in self.zones.values():
-            self.zone_recent.setdefault(zone.name, {})[ended] = {
-                "deficit": round(zone.deficit, 2),
-                "gegossen_l": round(zone.gegossen_l, 1),
-            }
-        self._trim_recent()
+        # Zonen-Tageswerte aus den ECHTEN Ventil-Daten des gestrigen Tages ableiten
+        # (erfasst manuell + Iriy), Defizit konsolidieren, Tabellenzeile schreiben.
+        self.hass.async_create_task(
+            self._apply_daily_watering(ended, day_start, today0)
+        )
 
         for acc in self._day.values():
             acc.reset()

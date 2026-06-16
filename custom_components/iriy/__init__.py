@@ -94,6 +94,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # backfillen (gestern-datiert, idempotent). Ab heute zeichnet HA selbst auf.
     if coordinator.import_history and coordinator.history_days > 0:
         await coordinator.async_backfill_entity_stats(coordinator.history_days)
+    # Zonen-Tagesmengen rueckwirkend aus den Ventil-Daten in die Tabelle holen
+    # (erfasst auch manuelles Gieszen; ~10 Tage, soweit die Ventil-Historie reicht).
+    await coordinator.async_backfill_zone_history(10)
     return True
 
 
