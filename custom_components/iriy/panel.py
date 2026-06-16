@@ -24,6 +24,7 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_ZONE_AREA,
+    CONF_ZONE_BY_AREA,
     CONF_ZONE_EFFICIENCY,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
@@ -111,6 +112,7 @@ def _instance_zones(coord: IriyCoordinator) -> list[dict]:
                 "efficiency": zone.efficiency,
                 "max_deficit": zone.max_deficit,
                 "area": raw.get(CONF_ZONE_AREA),
+                "by_area": zone.by_area,
                 "deficit": round(zone.deficit, 2),
                 "etc_today": round(zone.etc_today, 2),
                 "runtime_minutes": zone.runtime_minutes,
@@ -219,6 +221,7 @@ async def ws_zone_save(
             zone_in.get(CONF_ZONE_MAX_DEFICIT), DEFAULT_MAX_DEFICIT
         ),
     }
+    zone[CONF_ZONE_BY_AREA] = bool(zone_in.get(CONF_ZONE_BY_AREA))
     area = zone_in.get(CONF_ZONE_AREA)
     if area not in (None, ""):
         zone[CONF_ZONE_AREA] = _f(area, 0.0)

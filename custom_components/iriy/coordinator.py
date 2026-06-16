@@ -52,6 +52,7 @@ from .const import (
     CONF_WIND_HEIGHT,
     CONF_WIND_UNIT,
     CONF_ZONE_AREA,
+    CONF_ZONE_BY_AREA,
     CONF_ZONE_EFFICIENCY,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
@@ -145,13 +146,20 @@ class ZoneState:
     efficiency: float
     max_deficit: float
     area: float = 0.0             # Flaeche [m2] – fuer die Liter-Steuergroesse
+    by_area: bool = False         # True: nur Liter ueber Flaeche, KEINE Laufzeit
     deficit: float = 0.0          # aktuelles Wasserdefizit [mm]
     etc_today: float = 0.0        # Pflanzenbedarf heute [mm]
     last_etc: float = 0.0         # Bedarf im letzten Intervall [mm]
 
     @property
-    def runtime_minutes(self) -> float:
-        """ZEIT-Steuergroesse: Laufzeit [min] aus Defizit + Durchfluss (mm/h)."""
+    def runtime_minutes(self) -> float | None:
+        """ZEIT-Steuergroesse: Laufzeit [min] aus Defizit + Durchfluss (mm/h).
+
+        None bei Flaechensteuerung (by_area) – dann ist der Durchfluss
+        undefiniert/variabel und es wird nur ueber die Liter gesteuert.
+        """
+        if self.by_area:
+            return None
         return round(
             et.irrigation_minutes(self.deficit, self.throughput, self.efficiency), 0
         )
@@ -303,6 +311,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 efficiency=float(raw.get(CONF_ZONE_EFFICIENCY, DEFAULT_EFFICIENCY)),
                 max_deficit=float(raw.get(CONF_ZONE_MAX_DEFICIT, DEFAULT_MAX_DEFICIT)),
                 area=float(raw.get(CONF_ZONE_AREA, 0.0) or 0.0),
+                by_area=bool(raw.get(CONF_ZONE_BY_AREA, False)),
                 deficit=existing.get(name, 0.0),
             )
             self.zones[name] = zone

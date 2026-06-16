@@ -42,6 +42,7 @@ CONF_ZONE_THROUGHPUT = "throughput"   # mm/h
 CONF_ZONE_AREA = "area"               # m2 (optional, fuer spaetere Liter-Bilanz)
 CONF_ZONE_MAX_DEFICIT = "max_deficit"  # mm, Kappung des Buckets (RAW)
 CONF_ZONE_EFFICIENCY = "efficiency"   # 0..1
+CONF_ZONE_BY_AREA = "by_area"         # True: nur Liter ueber Flaeche, KEINE Laufzeit
 CONF_ZONE_VALVE = "valve"             # optional: switch/valve-Entity (Zukunft)
 
 # --- Neutrale Fallback-Standardwerte -----------------------------------

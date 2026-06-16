@@ -32,6 +32,7 @@ class IriyPanel extends HTMLElement {
     this._initDone = false;
     this._onClick = this._onClick.bind(this);
     this._onSubmit = this._onSubmit.bind(this);
+    this._onChange = this._onChange.bind(this);
   }
 
   set hass(hass) {
@@ -138,16 +139,23 @@ class IriyPanel extends HTMLElement {
     ev.preventDefault();
     const f = ev.target;
     if (f.id !== "zone-form") return;
+    const byArea = f.elements.by_area ? f.elements.by_area.checked : false;
     const zone = {
       name: f.elements.name.value.trim(),
       kc: f.elements.kc.value,
       area: f.elements.area.value,
-      throughput: f.elements.throughput.value,
+      throughput: f.elements.throughput ? f.elements.throughput.value : "",
       efficiency: f.elements.efficiency.value,
       max_deficit: f.elements.max_deficit.value,
+      by_area: byArea,
     };
     if (!zone.name) {
       this._error = "Bitte einen Zonennamen angeben.";
+      this._render();
+      return;
+    }
+    if (byArea && !(parseFloat(zone.area) > 0)) {
+      this._error = "Bei Flächensteuerung bitte eine Fläche (m²) angeben.";
       this._render();
       return;
     }
@@ -188,6 +196,29 @@ class IriyPanel extends HTMLElement {
     this.shadowRoot.innerHTML = `<style>${IriyPanel.styles}</style><div id="root"></div>`;
     this.shadowRoot.addEventListener("click", this._onClick);
     this.shadowRoot.addEventListener("submit", this._onSubmit);
+    this.shadowRoot.addEventListener("change", this._onChange);
+  }
+
+  // Modus-Checkbox umgeschaltet: aktuelle Eingaben sichern und Formular neu
+  // rendern (zeigt/versteckt das passende Feld).
+  _onChange(ev) {
+    if (ev.target.id !== "zone-by-area" || !this._form) return;
+    this._form.zone = this._readForm();
+    this._render();
+  }
+
+  _readForm() {
+    const f = this.shadowRoot.getElementById("zone-form");
+    if (!f) return this._form ? this._form.zone : {};
+    return {
+      name: f.elements.name.value,
+      kc: f.elements.kc.value,
+      area: f.elements.area.value,
+      throughput: f.elements.throughput ? f.elements.throughput.value : undefined,
+      efficiency: f.elements.efficiency.value,
+      max_deficit: f.elements.max_deficit.value,
+      by_area: f.elements.by_area ? f.elements.by_area.checked : false,
+    };
   }
 
   _render() {
@@ -285,24 +316,25 @@ class IriyPanel extends HTMLElement {
       </div>`;
   }
 
-  _zones(inst) {
-    const zones = inst.zones || [];
-    const list = zones.length
-      ? zones
-          .map(
-            (z) => `
+  _zoneRow(z) {
+    // Info-Zeile: bei Flächensteuerung Fläche statt Durchfluss.
+    const info = [`Kc ${NUM(z.kc, 2)}`];
+    if (z.by_area) info.push(`${NUM(z.area, 1)} m² (Fläche)`);
+    else {
+      if (z.area) info.push(`${NUM(z.area, 1)} m²`);
+      info.push(`${NUM(z.throughput, 1)} mm/h`);
+    }
+    info.push(`η ${NUM(z.efficiency, 2)}`);
+    // Badge: nur die zutreffenden Steuergrößen.
+    const badge = [`Defizit ${NUM(z.deficit)} mm`];
+    if (z.runtime_minutes != null) badge.push(`${NUM(z.runtime_minutes, 0)} min`);
+    if (z.liters_needed != null) badge.push(`${NUM(z.liters_needed, 1)} L`);
+    return `
         <div class="zone">
           <div class="zinfo">
             <strong>${ESC(z.name)}</strong>
-            <span class="muted">Kc ${NUM(z.kc, 2)}${
-              z.area ? " · " + NUM(z.area, 1) + " m²" : ""
-            } · ${NUM(z.throughput, 1)} mm/h · η ${NUM(z.efficiency, 2)}</span>
-            <span class="badge">Defizit ${NUM(z.deficit)} mm · ${NUM(
-              z.runtime_minutes,
-              0
-            )} min${
-              z.liters_needed != null ? " · " + NUM(z.liters_needed, 1) + " L" : ""
-            }</span>
+            <span class="muted">${info.join(" · ")}</span>
+            <span class="badge">${badge.join(" · ")}</span>
           </div>
           <div class="zact">
             <button class="icon" data-action="edit-zone" data-name="${ESC(
@@ -312,9 +344,13 @@ class IriyPanel extends HTMLElement {
               z.name
             )}" title="Löschen">🗑️</button>
           </div>
-        </div>`
-          )
-          .join("")
+        </div>`;
+  }
+
+  _zones(inst) {
+    const zones = inst.zones || [];
+    const list = zones.length
+      ? zones.map((z) => this._zoneRow(z)).join("")
       : `<p class="muted">Noch keine Zonen angelegt.</p>`;
     return `
       <div class="card">
@@ -332,6 +368,7 @@ class IriyPanel extends HTMLElement {
 
   _zoneForm() {
     const z = this._form.zone || {};
+    const byArea = !!z.by_area;
     const kcOptions = Object.entries(this._data.kc_table || {})
       .map(([k, v]) => `<option value="${v}">${k} (${v})</option>`)
       .join("");
@@ -344,6 +381,12 @@ class IriyPanel extends HTMLElement {
     return `
       <form id="zone-form">
         ${field("name", "Name", "type=text required", z.name, "z. B. Rasen, Hochbeet, Apfelbaum")}
+        <label class="check">
+          <input id="zone-by-area" name="by_area" type="checkbox" ${
+            byArea ? "checked" : ""
+          } />
+          <span>Nur über Fläche steuern (Liter statt Laufzeit) – bei undefiniertem/variablem Durchfluss</span>
+        </label>
         <div class="grid">
           <label class="field">
             <span>Kc (Pflanzenkoeffizient)</span>
@@ -352,8 +395,22 @@ class IriyPanel extends HTMLElement {
             }" list="kc-list" />
             <datalist id="kc-list">${kcOptions}</datalist>
           </label>
-          ${field("area", "Fläche (m²)", "type=number step=0.1 min=0", z.area, "optional, für Liter-Bilanz")}
-          ${field("throughput", "Durchfluss (mm/h)", "type=number step=0.5 min=0.5", z.throughput ?? 20, "")}
+          ${field(
+            "area",
+            "Fläche (m²)",
+            byArea
+              ? "type=number step=0.1 min=0.1 required"
+              : "type=number step=0.1 min=0",
+            z.area,
+            byArea ? "erforderlich – ergibt die Liter" : "optional, für Liter-Ausgabe"
+          )}
+          <div class="field" style="${byArea ? "display:none" : ""}">
+            <span>Durchfluss (mm/h)</span>
+            <input id="throughput" name="throughput" type="number" step="0.5" min="0.5" value="${
+              z.throughput ?? 20
+            }" />
+            <small class="muted">für die Laufzeit (z. B. Tropfschlauch)</small>
+          </div>
           ${field("efficiency", "Wirkungsgrad (0–1)", "type=number step=0.05 min=0.1 max=1", z.efficiency ?? 0.9, "")}
           ${field("max_deficit", "Max. Defizit (mm)", "type=number step=1 min=1", z.max_deficit ?? 30, "")}
         </div>
@@ -408,6 +465,8 @@ IriyPanel.styles = `
   .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 12px; }
   .field { display:flex; flex-direction:column; gap:4px; }
   .field span { font-size:.85rem; color: var(--secondary-text-color); }
+  .check { display:flex; align-items:flex-start; gap:8px; font-size:.9rem; cursor:pointer; }
+  .check input { margin-top:2px; }
   .field input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc);
                  background: var(--primary-background-color); color: var(--primary-text-color); }
   .formact { display:flex; justify-content:flex-end; gap:8px; }
