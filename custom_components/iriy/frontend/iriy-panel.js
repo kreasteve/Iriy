@@ -66,6 +66,68 @@ class IriyPanel extends HTMLElement {
     return this._hass.connection.sendMessagePromise(msg);
   }
 
+  // --- Generische Entitäts-Abfrage (primitiv, für jede Entität) --------
+  // Das hass-Objekt bringt alles mit: Live-Stände direkt, History/Statistik
+  // über HAs eigene WS-Befehle. Damit lassen sich Tabellen jetzt und später
+  // ohne neue Backend-Befehle füllen.
+
+  /** Live-Zustand einer beliebigen Entität (sofort, ohne Abruf). */
+  _state(entityId) {
+    const s = this._hass && this._hass.states[entityId];
+    return s ? s.state : null;
+  }
+
+  /** Langzeit-Statistik einer Entität: [{start, mean, min, max, sum, state}]. */
+  async _statistics(entityId, hours = 168, period = "day") {
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 3600000);
+    const res = await this._ws({
+      type: "recorder/statistics_during_period",
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      statistic_ids: [entityId],
+      period,
+      types: ["mean", "min", "max", "sum", "state"],
+    });
+    return (res && res[entityId]) || [];
+  }
+
+  /** Roh-State-Verlauf einer Entität: [{s: state, lu: ts}]. */
+  async _stateHistory(entityId, hours = 24) {
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 3600000);
+    const res = await this._ws({
+      type: "history/history_during_period",
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      entity_ids: [entityId],
+      minimal_response: true,
+      no_attributes: true,
+    });
+    return (res && res[entityId]) || [];
+  }
+
+  /** Tag-Label relativ zu heute: heute / gestern / Wochentag. */
+  _dayLabel(dateStr) {
+    const p = String(dateStr).split("-").map(Number);
+    const d = new Date(p[0], p[1] - 1, p[2]);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - d) / 86400000);
+    if (diff === 0) return "heute";
+    if (diff === 1) return "gestern";
+    const wd = [
+      "Sonntag",
+      "Montag",
+      "Dienstag",
+      "Mittwoch",
+      "Donnerstag",
+      "Freitag",
+      "Samstag",
+    ];
+    return wd[d.getDay()];
+  }
+
   async _load(silent = false) {
     if (!this._hass) return;
     try {
@@ -302,17 +364,49 @@ class IriyPanel extends HTMLElement {
 
   _table(inst) {
     const days = inst.last_days || [];
-    if (!days.length) return "";
-    const rows = days
-      .map(
-        (d) =>
-          `<tr><td>${d.date}</td><td class="r">${NUM(d.mm)} mm</td></tr>`
-      )
-      .join("");
+    // ET0 je Tag – „heute" (vorläufig) zuerst, dann Verlauf mit Wochentags-Label.
+    const et0Rows = [];
+    if (inst.et0_today != null)
+      et0Rows.push(
+        `<tr><td>heute</td><td class="r">${NUM(inst.et0_today)} mm <small class="muted">(läuft)</small></td></tr>`
+      );
+    for (const d of days)
+      et0Rows.push(
+        `<tr><td>${this._dayLabel(d.date)}</td><td class="r">${NUM(d.mm)} mm</td></tr>`
+      );
+    const et0Table = et0Rows.length
+      ? `<table><thead><tr><th>Tag</th><th class="r">ET0</th></tr></thead><tbody>${et0Rows.join(
+          ""
+        )}</tbody></table>`
+      : `<p class="muted">Noch keine Tageswerte.</p>`;
+
+    // Zonen mit aktuellen Werten (Defizit + die zutreffende Steuergröße).
+    const zones = inst.zones || [];
+    let zoneTable = "";
+    if (zones.length) {
+      const zr = zones
+        .map(
+          (z) => `<tr>
+            <td>${ESC(z.name)}</td>
+            <td class="r">${NUM(z.deficit)} mm</td>
+            <td class="r">${
+              z.runtime_minutes != null ? NUM(z.runtime_minutes, 0) + " min" : "–"
+            }</td>
+            <td class="r">${
+              z.liters_needed != null ? NUM(z.liters_needed, 1) + " L" : "–"
+            }</td>
+          </tr>`
+        )
+        .join("");
+      zoneTable = `
+        <h3>Zonen</h3>
+        <table><thead><tr><th>Zone</th><th class="r">Defizit</th><th class="r">Laufzeit</th><th class="r">Menge</th></tr></thead><tbody>${zr}</tbody></table>`;
+    }
     return `
       <div class="card">
         <h2>Tabelle</h2>
-        <table><thead><tr><th>Datum</th><th class="r">ET0</th></tr></thead><tbody>${rows}</tbody></table>
+        ${et0Table}
+        ${zoneTable}
       </div>`;
   }
 
@@ -430,6 +524,7 @@ IriyPanel.styles = `
   header { display:flex; align-items:center; justify-content:space-between; margin: 8px 0 4px; }
   h1 { font-size: 1.5rem; font-weight: 500; margin: 0; }
   h2 { font-size: 1rem; font-weight: 500; margin: 0 0 8px; }
+  h3 { font-size: .92rem; font-weight: 500; margin: 16px 0 6px; color: var(--secondary-text-color); }
   .card { background: var(--card-background-color, #fff); border-radius: 12px; padding: 16px;
           margin-top: 12px; box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.1)); }
   .cardhead { display:flex; align-items:center; justify-content:space-between; }
