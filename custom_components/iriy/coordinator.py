@@ -1259,7 +1259,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         cumulative_daily -> Tagesmaximum; incremental -> Summe; rate -> uebersprungen.
         """
         rain_eid = self._src.get(CONF_RAIN)
-        if rain_eid and self._rain_mode in ("cumulative_daily", "incremental"):
+        if rain_eid:
             try:
                 from homeassistant.components.recorder import get_instance, history
             except ImportError:
@@ -1280,18 +1280,30 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                         )
                     except Exception:  # noqa: BLE001
                         continue
-                    vals = []
+                    pts: list[tuple[datetime, float]] = []
                     for s in data.get(rain_eid, []):
-                        if s.last_changed < d_start:
-                            continue
                         try:
-                            vals.append(float(s.state))
+                            pts.append((s.last_changed, float(s.state)))
                         except (ValueError, TypeError):
                             continue
-                    if not vals:
+                    if not pts:
                         continue
-                    day_rain = max(vals) if self._rain_mode == "cumulative_daily" else sum(vals)
-                    self.rain_recent[iso] = round(day_rain, 2)
+                    if self._rain_mode == "incremental":
+                        day_rain = sum(v for t, v in pts if t >= d_start)
+                    elif self._rain_mode == "rate":
+                        # mm/h ueber den Tag integrieren (carry-forward).
+                        day_rain = 0.0
+                        for j, (t, v) in enumerate(pts):
+                            if v <= 0:
+                                continue
+                            t2 = pts[j + 1][0] if j + 1 < len(pts) else d_end
+                            if t < d_start:
+                                t = d_start
+                            day_rain += v * max((t2 - t).total_seconds(), 0.0) / 3600.0
+                    else:  # cumulative_daily -> Tagesmaximum
+                        day_rain = max((v for t, v in pts if t >= d_start), default=0.0)
+                    if day_rain > 0:
+                        self.rain_recent[iso] = round(day_rain, 2)
         self._reconstruct_deficit_history(days)
         self._trim_recent()
         await self._async_save()

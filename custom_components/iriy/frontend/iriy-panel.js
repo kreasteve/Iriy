@@ -381,51 +381,102 @@ class IriyPanel extends HTMLElement {
 
   _chart(inst) {
     const days = [...(inst.last_days || [])].reverse(); // chronologisch
-    if (!days.length)
-      return `<div class="card"><h2>Verlauf</h2><p class="muted">Noch keine Tageswerte.</p></div>`;
     const zones = inst.zones || [];
     const rain = inst.rain_recent || {};
     const zhist = inst.zone_history || {};
-    const W = 100,
-      H = 40,
-      n = days.length,
-      bw = W / n;
     const deflineColors = ["#e67e22", "#9b59b6", "#c0392b", "#27ae60", "#2c3e50"];
 
-    // Gemeinsame mm-Achse über ET0, Regen und alle Zonen-Defizite.
-    const vals = [0.1];
-    for (const d of days) {
-      vals.push(d.mm || 0, rain[d.date] || 0);
+    // Tage inkl. HEUTE (Live-Werte ans Ende anhängen).
+    const t = new Date();
+    const todayIso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}-${String(t.getDate()).padStart(2, "0")}`;
+    const series = days.map((d) => ({
+      iso: d.date,
+      et0: d.mm || 0,
+      rain: rain[d.date] || 0,
+      defOf: (z) => ((zhist[z.name] || {})[d.date] || {}).deficit,
+      watOf: (z) => ((zhist[z.name] || {})[d.date] || {}).gegossen_l || 0,
+    }));
+    series.push({
+      iso: todayIso,
+      et0: inst.et0_today || 0,
+      rain: inst.rain_today || 0,
+      live: true,
+      defOf: (z) => z.deficit,
+      watOf: (z) => z.gegossen_l || 0,
+    });
+    if (!series.length)
+      return `<div class="card"><h2>Verlauf</h2><p class="muted">Noch keine Tageswerte.</p></div>`;
+
+    // gemeinsame mm-Achse, auf "schönes" Maximum gerundet.
+    const vv = [1];
+    for (const s of series) {
+      vv.push(s.et0, s.rain);
       for (const z of zones) {
-        const h = (zhist[z.name] || {})[d.date];
-        if (h && h.deficit != null) vals.push(h.deficit);
+        const d = s.defOf(z);
+        if (d != null) vv.push(d);
       }
     }
-    const max = Math.max(...vals);
-    const yOf = (v) => (H - (v / max) * (H - 2)).toFixed(2);
-    const hOf = (v) => ((v / max) * (H - 2)).toFixed(2);
+    const rawMax = Math.max(...vv);
+    const max = Math.max(5, Math.ceil(rawMax / 5) * 5);
+
+    // Layout (echtes Koordinatensystem, keine Verzerrung).
+    const W = 320,
+      H = 168,
+      ml = 22,
+      mr = 6,
+      mt = 8,
+      mb = 16;
+    const x0 = ml,
+      x1 = W - mr,
+      yt = mt,
+      yb = H - mb;
+    const n = series.length,
+      bw = (x1 - x0) / n;
+    const Y = (v) => yb - (v / max) * (yb - yt);
+
+    let grid = "";
+    const steps = 4;
+    for (let g = 0; g <= steps; g++) {
+      const v = (max * g) / steps;
+      const y = Y(v).toFixed(1);
+      grid += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" class="grid"/>`;
+      grid += `<text x="${x0 - 2}" y="${(parseFloat(y) + 2).toFixed(1)}" class="yl">${v.toFixed(max < 10 ? 1 : 0)}</text>`;
+    }
 
     let bars = "";
-    days.forEach((d, i) => {
-      const x0 = i * bw;
-      const e = d.mm || 0;
-      const r = rain[d.date] || 0;
-      bars += `<rect class="b-et0" x="${(x0 + bw * 0.12).toFixed(2)}" y="${yOf(e)}" width="${(bw * 0.34).toFixed(2)}" height="${hOf(e)}"><title>${this._dayLabel(d.date)} · ET0 ${e.toFixed(1)} mm</title></rect>`;
-      bars += `<rect class="b-rain" x="${(x0 + bw * 0.54).toFixed(2)}" y="${yOf(r)}" width="${(bw * 0.34).toFixed(2)}" height="${hOf(r)}"><title>${this._dayLabel(d.date)} · Regen ${r.toFixed(1)} mm</title></rect>`;
+    series.forEach((s, i) => {
+      const cx = x0 + i * bw;
+      const be = Y(s.et0),
+        br = Y(s.rain);
+      bars += `<rect class="b-et0${s.live ? " live" : ""}" x="${(cx + bw * 0.16).toFixed(1)}" y="${be.toFixed(1)}" width="${(bw * 0.3).toFixed(1)}" height="${(yb - be).toFixed(1)}"><title>${this._dayLabel(s.iso)} · ET0 ${s.et0.toFixed(1)} mm</title></rect>`;
+      bars += `<rect class="b-rain" x="${(cx + bw * 0.52).toFixed(1)}" y="${br.toFixed(1)}" width="${(bw * 0.3).toFixed(1)}" height="${(yb - br).toFixed(1)}"><title>${this._dayLabel(s.iso)} · Regen ${s.rain.toFixed(1)} mm</title></rect>`;
     });
 
     let lines = "";
+    let marks = "";
     zones.forEach((z, zi) => {
+      const c = deflineColors[zi % deflineColors.length];
       const pts = [];
-      days.forEach((d, i) => {
-        const h = (zhist[z.name] || {})[d.date];
-        if (h && h.deficit != null)
-          pts.push(`${(i * bw + bw * 0.5).toFixed(2)},${yOf(h.deficit)}`);
+      series.forEach((s, i) => {
+        const def = s.defOf(z);
+        if (def == null) return;
+        const cx = x0 + i * bw + bw * 0.5;
+        const cy = Y(def);
+        pts.push(`${cx.toFixed(1)},${cy.toFixed(1)}`);
+        if (s.watOf(z) > 0)
+          marks += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="2.4" fill="${c}" stroke="#fff" stroke-width="0.6"><title>${this._dayLabel(s.iso)} · ${ESC(z.name)}: gegossen</title></circle>`;
       });
       if (pts.length > 1)
-        lines += `<polyline points="${pts.join(" ")}" fill="none" stroke="${
-          deflineColors[zi % deflineColors.length]
-        }" stroke-width="0.8" vector-effect="non-scaling-stroke"/>`;
+        lines += `<polyline points="${pts.join(" ")}" fill="none" stroke="${c}" stroke-width="1.4"/>`;
+    });
+
+    let xl = "";
+    series.forEach((s, i) => {
+      const cx = (x0 + i * bw + bw * 0.5).toFixed(1);
+      xl += `<text x="${cx}" y="${H - 5}" class="xl${s.live ? " live" : ""}">${this._dayShort(s.iso)}</text>`;
     });
 
     const sw = (c) => `<i class="sw" style="background:${c}"></i>`;
@@ -435,20 +486,16 @@ class IriyPanel extends HTMLElement {
       zones
         .map(
           (z, zi) =>
-            `<span class="lg">${sw(
-              deflineColors[zi % deflineColors.length]
-            )}${ESC(z.name)} Defizit</span>`
+            `<span class="lg">${sw(deflineColors[zi % deflineColors.length])}${ESC(
+              z.name
+            )} Defizit ●</span>`
         )
         .join("");
-    const labels = days
-      .map((d) => `<span style="flex:1">${this._dayShort(d.date)}</span>`)
-      .join("");
     return `
       <div class="card">
         <h2>Verlauf – letzte ${days.length} Tage (mm)</h2>
         <div class="legend muted">${legend}</div>
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="chart">${bars}${lines}</svg>
-        <div class="xlabels muted">${labels}</div>
+        <svg viewBox="0 0 ${W} ${H}" class="chart2">${grid}${bars}${lines}${marks}${xl}</svg>
       </div>`;
   }
 
@@ -721,9 +768,14 @@ IriyPanel.styles = `
   .stat .val { font-size: 1.7rem; font-weight: 500; }
   .stat .val small { font-size: .9rem; color: var(--secondary-text-color); }
   .diag { margin-top: 10px; line-height: 1.5; }
-  .chart { width:100%; height: 170px; display:block; }
-  .chart rect { fill: var(--primary-color, #03a9f4); }
-  .chart .b-rain { fill: #48c9b0; }
+  .chart2 { width:100%; height:auto; display:block; }
+  .chart2 .grid { stroke: var(--divider-color, #e0e0e0); stroke-width: 0.4; }
+  .chart2 .yl { font-size: 7px; fill: var(--secondary-text-color); text-anchor: end; }
+  .chart2 .xl { font-size: 7.5px; fill: var(--secondary-text-color); text-anchor: middle; }
+  .chart2 .xl.live { font-weight: 700; fill: var(--primary-text-color); }
+  .chart2 .b-et0 { fill: var(--primary-color, #03a9f4); }
+  .chart2 .b-et0.live { opacity: .45; }
+  .chart2 .b-rain { fill: #48c9b0; }
   .legend { display:flex; flex-wrap:wrap; gap:10px; margin: 2px 0 6px; font-size:.74rem; }
   .legend .lg { display:inline-flex; align-items:center; gap:4px; }
   .legend .sw { width:10px; height:10px; border-radius:2px; display:inline-block; }
