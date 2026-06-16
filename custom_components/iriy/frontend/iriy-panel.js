@@ -373,37 +373,81 @@ class IriyPanel extends HTMLElement {
       </div>`;
   }
 
+  _dayShort(dateStr) {
+    const p = String(dateStr).split("-").map(Number);
+    const d = new Date(p[0], p[1] - 1, p[2]);
+    return ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"][d.getDay()];
+  }
+
   _chart(inst) {
     const days = [...(inst.last_days || [])].reverse(); // chronologisch
     if (!days.length)
       return `<div class="card"><h2>Verlauf</h2><p class="muted">Noch keine Tageswerte.</p></div>`;
+    const zones = inst.zones || [];
+    const rain = inst.rain_recent || {};
+    const zhist = inst.zone_history || {};
     const W = 100,
       H = 40,
-      max = Math.max(...days.map((d) => d.mm), 0.1);
-    const bw = W / days.length;
-    const bars = days
-      .map((d, i) => {
-        const h = (d.mm / max) * (H - 6);
-        const x = i * bw + bw * 0.15;
-        const w = bw * 0.7;
-        const y = H - h;
-        return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(
-          2
-        )}" height="${h.toFixed(2)}" rx="0.6"><title>${d.date}: ${d.mm.toFixed(
-          2
-        )} mm</title></rect>`;
-      })
-      .join("");
+      n = days.length,
+      bw = W / n;
+    const deflineColors = ["#e67e22", "#9b59b6", "#c0392b", "#27ae60", "#2c3e50"];
+
+    // Gemeinsame mm-Achse über ET0, Regen und alle Zonen-Defizite.
+    const vals = [0.1];
+    for (const d of days) {
+      vals.push(d.mm || 0, rain[d.date] || 0);
+      for (const z of zones) {
+        const h = (zhist[z.name] || {})[d.date];
+        if (h && h.deficit != null) vals.push(h.deficit);
+      }
+    }
+    const max = Math.max(...vals);
+    const yOf = (v) => (H - (v / max) * (H - 2)).toFixed(2);
+    const hOf = (v) => ((v / max) * (H - 2)).toFixed(2);
+
+    let bars = "";
+    days.forEach((d, i) => {
+      const x0 = i * bw;
+      const e = d.mm || 0;
+      const r = rain[d.date] || 0;
+      bars += `<rect class="b-et0" x="${(x0 + bw * 0.12).toFixed(2)}" y="${yOf(e)}" width="${(bw * 0.34).toFixed(2)}" height="${hOf(e)}"><title>${this._dayLabel(d.date)} · ET0 ${e.toFixed(1)} mm</title></rect>`;
+      bars += `<rect class="b-rain" x="${(x0 + bw * 0.54).toFixed(2)}" y="${yOf(r)}" width="${(bw * 0.34).toFixed(2)}" height="${hOf(r)}"><title>${this._dayLabel(d.date)} · Regen ${r.toFixed(1)} mm</title></rect>`;
+    });
+
+    let lines = "";
+    zones.forEach((z, zi) => {
+      const pts = [];
+      days.forEach((d, i) => {
+        const h = (zhist[z.name] || {})[d.date];
+        if (h && h.deficit != null)
+          pts.push(`${(i * bw + bw * 0.5).toFixed(2)},${yOf(h.deficit)}`);
+      });
+      if (pts.length > 1)
+        lines += `<polyline points="${pts.join(" ")}" fill="none" stroke="${
+          deflineColors[zi % deflineColors.length]
+        }" stroke-width="0.8" vector-effect="non-scaling-stroke"/>`;
+    });
+
+    const sw = (c) => `<i class="sw" style="background:${c}"></i>`;
+    const legend =
+      `<span class="lg">${sw("var(--primary-color,#03a9f4)")}ET0</span>` +
+      `<span class="lg">${sw("#48c9b0")}Regen</span>` +
+      zones
+        .map(
+          (z, zi) =>
+            `<span class="lg">${sw(
+              deflineColors[zi % deflineColors.length]
+            )}${ESC(z.name)} Defizit</span>`
+        )
+        .join("");
     const labels = days
-      .map((d, i) => {
-        const dd = d.date.slice(5); // MM-TT
-        return `<span style="flex:1">${dd}</span>`;
-      })
+      .map((d) => `<span style="flex:1">${this._dayShort(d.date)}</span>`)
       .join("");
     return `
       <div class="card">
-        <h2>ET0 – letzte ${days.length} Tage</h2>
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="chart">${bars}</svg>
+        <h2>Verlauf – letzte ${days.length} Tage (mm)</h2>
+        <div class="legend muted">${legend}</div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="chart">${bars}${lines}</svg>
         <div class="xlabels muted">${labels}</div>
       </div>`;
   }
@@ -418,15 +462,14 @@ class IriyPanel extends HTMLElement {
     return z.throughput > 0 ? (mm / (z.throughput * eff)) * 60 : 0;
   }
   _deficitUnit(z) {
-    return z.area > 0 ? "L" : "min";
+    return "mm"; // Defizit immer in mm
   }
   _wateredUnit() {
     return this._wunit === "mm" ? "mm" : this._wunit === "L" ? "L" : "min";
   }
-  // Defizit als Zahl: Flächen-Zone -> Liter, Zeit-Zone -> Minuten. mm==null -> live.
+  // Defizit als Zahl, immer in mm. mm==null -> Live-Wert der Zone.
   _deficitNum(z, mm) {
-    if (z.area > 0) return mm == null ? z.liters_needed : this._litersFromMm(z, mm);
-    return mm == null ? z.runtime_minutes : this._minutesFromMm(z, mm);
+    return mm == null ? z.deficit : mm;
   }
   // Gegossen als Zahl je nach Umschalter (aus gemessenen Litern).
   _wateredNum(z, liters) {
@@ -475,7 +518,7 @@ class IriyPanel extends HTMLElement {
         .map((z) => {
           const def = isLive ? this._deficitNum(z, null) : this._deficitNum(z, defMm(z));
           const liters = getL(z);
-          return this._cell(def, 0) + this._cell(this._wateredNum(z, liters), wdec);
+          return this._cell(def, 1) + this._cell(this._wateredNum(z, liters), wdec);
         })
         .join("");
 
@@ -496,7 +539,7 @@ class IriyPanel extends HTMLElement {
           const h = (zhist[z.name] || {})[d.date];
           const def = h ? this._deficitNum(z, h.deficit) : null;
           const liters = h ? h.gegossen_l : null;
-          return this._cell(def, 0) + this._cell(this._wateredNum(z, liters), wdec);
+          return this._cell(def, 1) + this._cell(this._wateredNum(z, liters), wdec);
         })
         .join("");
       rows.push(row(this._dayLabel(d.date), d.mm, rain[d.date], cells));
@@ -678,8 +721,12 @@ IriyPanel.styles = `
   .stat .val { font-size: 1.7rem; font-weight: 500; }
   .stat .val small { font-size: .9rem; color: var(--secondary-text-color); }
   .diag { margin-top: 10px; line-height: 1.5; }
-  .chart { width:100%; height: 160px; display:block; }
+  .chart { width:100%; height: 170px; display:block; }
   .chart rect { fill: var(--primary-color, #03a9f4); }
+  .chart .b-rain { fill: #48c9b0; }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; margin: 2px 0 6px; font-size:.74rem; }
+  .legend .lg { display:inline-flex; align-items:center; gap:4px; }
+  .legend .sw { width:10px; height:10px; border-radius:2px; display:inline-block; }
   .chart .bval { fill: var(--secondary-text-color); font-size: 2px; text-anchor: middle; }
   .xlabels { display:flex; margin-top:4px; text-align:center; }
   .xlabels span { font-size:.7rem; }
