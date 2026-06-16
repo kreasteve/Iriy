@@ -44,26 +44,37 @@ _LOGGER = logging.getLogger(__name__)
 PANEL_URL_PATH = "iriy"
 PANEL_STATIC_URL = "/iriy_frontend"
 # Eigener Top-Level-Key (NICHT in hass.data[DOMAIN], wo nur Koordinatoren liegen).
-_FRONTEND_FLAG = f"{DOMAIN}_frontend_registered"
+_STATIC_FLAG = f"{DOMAIN}_static_registered"
 
 
 async def async_register_frontend(hass: HomeAssistant) -> None:
-    """Panel, statische Datei und WS-Befehle EINMAL pro HA-Lauf registrieren."""
-    if hass.data.get(_FRONTEND_FLAG):
-        return
-
-    websocket_api.async_register_command(hass, ws_overview)
-    websocket_api.async_register_command(hass, ws_zone_save)
-    websocket_api.async_register_command(hass, ws_zone_delete)
-
-    frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_STATIC_URL, frontend_dir, False)]
-    )
-
+    """WS-Befehle/statische Pfade EINMAL registrieren; das Panel bei JEDEM
+    Setup mit der aktuellen Version – so folgt module_url ?v= der installierten
+    Version und der Browser-Cache bricht nach jedem Update auf (auch ohne
+    vollen HA-Neustart)."""
     integration = await async_get_integration(hass, DOMAIN)
     version = integration.version or "0"
 
+    # WS-Befehle + statische Pfade nur EINMAL pro HA-Lauf (eine zweite
+    # Pfad-Registrierung wuerde fehlschlagen).
+    if not hass.data.get(_STATIC_FLAG):
+        websocket_api.async_register_command(hass, ws_overview)
+        websocket_api.async_register_command(hass, ws_zone_save)
+        websocket_api.async_register_command(hass, ws_zone_delete)
+        frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(PANEL_STATIC_URL, frontend_dir, False)]
+        )
+        hass.data[_STATIC_FLAG] = True
+
+    # Panel bei jedem Setup frisch registrieren (alte Registrierung vorher
+    # entfernen). Bricht den ?v=-Cache nach einem Update auf.
+    from homeassistant.components import frontend
+
+    try:
+        frontend.async_remove_panel(hass, PANEL_URL_PATH)
+    except Exception:  # noqa: BLE001
+        pass
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=PANEL_URL_PATH,
@@ -75,9 +86,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
         config={},
         embed_iframe=False,
     )
-    # Flag erst NACH erfolgreicher Registrierung -> bei Fehler erneuter Versuch.
-    hass.data[_FRONTEND_FLAG] = True
-    _LOGGER.debug("Iriy: Sidebar-Panel registriert")
+    _LOGGER.debug("Iriy: Sidebar-Panel registriert (v%s)", version)
 
 
 # --- Helfer ------------------------------------------------------------
