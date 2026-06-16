@@ -114,6 +114,7 @@ def _instance_zones(coord: IriyCoordinator) -> list[dict]:
                 "deficit": round(zone.deficit, 2),
                 "etc_today": round(zone.etc_today, 2),
                 "runtime_minutes": zone.runtime_minutes,
+                "liters_needed": zone.liters_needed,
             }
         )
     return out

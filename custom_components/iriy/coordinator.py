@@ -51,6 +51,7 @@ from .const import (
     CONF_WIND,
     CONF_WIND_HEIGHT,
     CONF_WIND_UNIT,
+    CONF_ZONE_AREA,
     CONF_ZONE_EFFICIENCY,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
@@ -143,15 +144,30 @@ class ZoneState:
     throughput: float
     efficiency: float
     max_deficit: float
+    area: float = 0.0             # Flaeche [m2] – fuer die Liter-Steuergroesse
     deficit: float = 0.0          # aktuelles Wasserdefizit [mm]
     etc_today: float = 0.0        # Pflanzenbedarf heute [mm]
     last_etc: float = 0.0         # Bedarf im letzten Intervall [mm]
 
     @property
     def runtime_minutes(self) -> float:
+        """ZEIT-Steuergroesse: Laufzeit [min] aus Defizit + Durchfluss (mm/h)."""
         return round(
             et.irrigation_minutes(self.deficit, self.throughput, self.efficiency), 0
         )
+
+    @property
+    def liters_needed(self) -> float | None:
+        """LITER-Steuergroesse: auszubringende Menge [L].
+
+        Liter = Defizit[mm] x Flaeche[m2] / Wirkungsgrad. 1 mm ueber 1 m2 = 1 L;
+        durch den Wirkungsgrad fuer die Brutto-Menge (analog zur Laufzeit). Nur
+        sinnvoll, wenn eine Flaeche gesetzt ist – sonst None.
+        """
+        if self.area <= 0:
+            return None
+        eff = self.efficiency if self.efficiency > 0 else 1.0
+        return round(self.deficit * self.area / eff, 1)
 
 
 @dataclass
@@ -286,6 +302,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 throughput=float(raw.get(CONF_ZONE_THROUGHPUT, DEFAULT_THROUGHPUT)),
                 efficiency=float(raw.get(CONF_ZONE_EFFICIENCY, DEFAULT_EFFICIENCY)),
                 max_deficit=float(raw.get(CONF_ZONE_MAX_DEFICIT, DEFAULT_MAX_DEFICIT)),
+                area=float(raw.get(CONF_ZONE_AREA, 0.0) or 0.0),
                 deficit=existing.get(name, 0.0),
             )
             self.zones[name] = zone
@@ -854,6 +871,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             self._apply_to_zones(0.0, self._rain_iv)
 
         self._last_tick = now
+        # Rate als Momentanwert aus den aktuellen Sensorstaenden – sofort da,
+        # neustart-robust, bei jedem Tick frisch (nicht erst nach 2 Intervallen).
+        if self._hourly:
+            self.et0_rate = self._instant_rate()
         self._reset_interval()
         await self._async_save()
         return self._snapshot()
@@ -899,10 +920,62 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 0.0,  # Taubildung (negativ) zaehlt nicht als Verlust
             )
             self.et0_today += et0_iv
-            self.et0_rate = round(et0_iv / period_h, 3) if period_h else None
 
         # Regen IMMER verrechnen (ET-Term ist 0, falls Daten fehlten).
         self._apply_to_zones(et0_iv, self._rain_iv)
+
+    def _instant_rate(self) -> float | None:
+        """Momentane ET-Rate [mm/h] aus den AKTUELLEN Sensorstaenden.
+
+        Unabhaengig von der Intervall-Akkumulation -> sofort nach (Neu-)Start
+        verfuegbar und bei jedem Tick frisch. Liefert None, wenn ein
+        Pflichtsensor gerade keinen gueltigen Wert liefert.
+        """
+
+        def cur(conf_key: str) -> float | None:
+            eid = self._src.get(conf_key)
+            if not eid:
+                return None
+            st = self.hass.states.get(eid)
+            if st is None or str(st.state).lower() in _INVALID_STATES:
+                return None
+            try:
+                return float(st.state)
+            except (ValueError, TypeError):
+                return None
+
+        t = cur(CONF_TEMP)
+        rh = cur(CONF_HUMIDITY)
+        wind = cur(CONF_WIND)
+        solar = cur(CONF_SOLAR)
+        if None in (t, rh, wind, solar):
+            return None
+        if self._wind_unit == "km/h":
+            wind /= 3.6
+        pressure = cur(CONF_PRESSURE)
+        if pressure is None:
+            pressure = self._pressure_kpa()
+        elif self._pressure_unit == "hPa":
+            pressure /= 10.0
+        now = dt_util.utcnow()
+        try:
+            rate = et.et0_hourly(
+                t_air=t,
+                rh=rh,
+                wind_ms=wind,
+                solar_w_m2=solar,
+                pressure_kpa=pressure,
+                latitude_deg=self._lat,
+                longitude_east_deg=self._lon,
+                elevation_m=self._elev,
+                day_of_year=now.timetuple().tm_yday,
+                utc_hour_mid=now.hour + now.minute / 60.0,
+                period_hours=1.0,
+                wind_sensor_height_m=self._wind_h,
+            )
+        except (ValueError, ZeroDivisionError):
+            return None
+        return round(max(rate, 0.0), 3)
 
     def _apply_to_zones(self, et0_mm: float, rain_mm: float) -> None:
         for zone in self.zones.values():
@@ -933,7 +1006,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         for acc in self._day.values():
             acc.reset()
         self.et0_today = 0.0
-        self.et0_rate = None
+        self.et0_rate = self._instant_rate() if self._hourly else None
         self._rain_day = 0.0
         for zone in self.zones.values():
             zone.etc_today = 0.0

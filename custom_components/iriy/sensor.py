@@ -56,6 +56,7 @@ async def async_setup_entry(
     for name in coordinator.zones:
         entities.append(IriyZoneDeficitSensor(coordinator, entry, name))
         entities.append(IriyZoneRuntimeSensor(coordinator, entry, name))
+        entities.append(IriyZoneLitersSensor(coordinator, entry, name))
 
     async_add_entities(entities)
 
@@ -193,5 +194,39 @@ class IriyZoneRuntimeSensor(_IriyZoneBase):
             return None
         return {
             "throughput_mm_h": zone.throughput,
+            "efficiency": zone.efficiency,
+        }
+
+
+class IriyZoneLitersSensor(_IriyZoneBase):
+    """LITER-Steuergroesse: auszubringende Wassermenge einer Zone [L].
+
+    Aus Defizit [mm] x Flaeche [m2] / Wirkungsgrad. Bleibt leer (unknown),
+    solange der Zone keine Flaeche zugewiesen ist – dann steuert man ueber
+    die Laufzeit (mm/h) statt ueber die Menge.
+    """
+
+    _attr_native_unit_of_measurement = "L"
+    _attr_icon = "mdi:water"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, zone_name) -> None:
+        super().__init__(coordinator, entry, zone_name)
+        self._attr_name = f"{zone_name.capitalize()} Wassermenge"
+        self._attr_unique_id = f"{entry.entry_id}_{zone_name}_liters"
+
+    @property
+    def native_value(self) -> float | None:
+        zone = self._zone
+        return zone.liters_needed if zone else None
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        zone = self._zone
+        if not zone:
+            return None
+        return {
+            "area_m2": zone.area,
+            "deficit_mm": round(zone.deficit, 2),
             "efficiency": zone.efficiency,
         }

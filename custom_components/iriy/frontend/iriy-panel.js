@@ -297,10 +297,12 @@ class IriyPanel extends HTMLElement {
             <span class="muted">Kc ${NUM(z.kc, 2)}${
               z.area ? " · " + NUM(z.area, 1) + " m²" : ""
             } · ${NUM(z.throughput, 1)} mm/h · η ${NUM(z.efficiency, 2)}</span>
-            <span class="badge">Defizit ${NUM(z.deficit)} mm · Laufzeit ${NUM(
+            <span class="badge">Defizit ${NUM(z.deficit)} mm · ${NUM(
               z.runtime_minutes,
               0
-            )} min</span>
+            )} min${
+              z.liters_needed != null ? " · " + NUM(z.liters_needed, 1) + " L" : ""
+            }</span>
           </div>
           <div class="zact">
             <button class="icon" data-action="edit-zone" data-name="${ESC(
