@@ -18,6 +18,7 @@ Zwei parallele ET-Spuren, beide nuetzlich:
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -58,7 +59,10 @@ from .const import (
     CONF_ZONE_MAX_DEFICIT,
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
+    CONF_ZONE_VALVE,
     CONF_ZONES,
+    DEFAULT_Z2M_BASE_TOPIC,
+    VALVE_VOLUME_SUFFIX,
     DEFAULT_BACKFILL_DAYS,
     DEFAULT_EFFICIENCY,
     DEFAULT_ELEVATION,
@@ -83,6 +87,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Sentinel-Werte, ab denen wir eine Quelle als "nicht messend" behandeln.
 _INVALID_STATES = {"unknown", "unavailable", "none", ""}
+# Sicherheits-Obergrenzen fuer ein einzelnes Giesz-Kommando (physisches Ventil):
+_VALVE_MAX_LITERS = 2000.0
+_VALVE_MAX_MINUTES = 600.0
 
 
 class _Acc:
@@ -147,9 +154,11 @@ class ZoneState:
     max_deficit: float
     area: float = 0.0             # Flaeche [m2] – fuer die Liter-Steuergroesse
     by_area: bool = False         # True: nur Liter ueber Flaeche, KEINE Laufzeit
+    valve: str | None = None      # switch-Entity des Ventils (z2m), optional
     deficit: float = 0.0          # aktuelles Wasserdefizit [mm]
     etc_today: float = 0.0        # Pflanzenbedarf heute [mm]
     last_etc: float = 0.0         # Bedarf im letzten Intervall [mm]
+    gegossen_l: float = 0.0       # heute ausgebracht [L] (vom Ventil gemessen)
 
     @property
     def runtime_minutes(self) -> float | None:
@@ -253,6 +262,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # Dashboard-Tabelle; gespeist aus der importierten Tagesstatistik,
         # persistiert im Store (ueberlebt Neustarts).
         self.et0_recent: dict[str, float] = {}
+        # Parallele Tages-Logs fuer die Tabelle (ISO-Datum -> Wert), persistiert.
+        self.rain_recent: dict[str, float] = {}           # Regen [mm] je Tag
+        self.zone_recent: dict[str, dict[str, dict]] = {}  # zone -> {datum: {...}}
+        # Letzter gemessener Ventil-Volumenstand je Zone [L] (fuer Delta -> Defizit).
+        self._valve_base: dict[str, float] = {}
         self.et0_today = 0.0
         self.et0_rate: float | None = None
         self._last_tick: datetime | None = None
@@ -312,6 +326,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 max_deficit=float(raw.get(CONF_ZONE_MAX_DEFICIT, DEFAULT_MAX_DEFICIT)),
                 area=float(raw.get(CONF_ZONE_AREA, 0.0) or 0.0),
                 by_area=bool(raw.get(CONF_ZONE_BY_AREA, False)),
+                valve=raw.get(CONF_ZONE_VALVE) or None,
                 deficit=existing.get(name, 0.0),
             )
             self.zones[name] = zone
@@ -884,6 +899,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # neustart-robust, bei jedem Tick frisch (nicht erst nach 2 Intervallen).
         if self._hourly:
             self.et0_rate = self._instant_rate()
+        # Gemessenes Ventil-Volumen verbuchen (Defizit selbstkorrigierend).
+        self._read_valve_volumes()
         self._reset_interval()
         await self._async_save()
         return self._snapshot()
@@ -986,6 +1003,162 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             return None
         return round(max(rate, 0.0), 3)
 
+    # --- Ventile (z2m GiEX/Tuya) ---------------------------------------
+
+    def _valve_volume_entity(self, valve: str) -> str | None:
+        """Den taeglichen Volumen-Mess-Sensor am selben Geraet wie der
+        Ventil-Switch finden (…_daily_irrigation_volume)."""
+        from homeassistant.helpers import entity_registry as er
+
+        reg = er.async_get(self.hass)
+        ent = reg.async_get(valve)
+        if ent is None or ent.device_id is None:
+            return None
+        for e in reg.entities.values():
+            if e.device_id == ent.device_id and e.entity_id.endswith(
+                VALVE_VOLUME_SUFFIX
+            ):
+                return e.entity_id
+        return None
+
+    def _valve_set_topic(self, valve: str) -> str | None:
+        """z2m-Set-Topic aus dem Geraetenamen ableiten: <base>/<name>/set."""
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+
+        ent = er.async_get(self.hass).async_get(valve)
+        if ent is None or ent.device_id is None:
+            return None
+        dev = dr.async_get(self.hass).async_get(ent.device_id)
+        if dev is None:
+            return None
+        name = dev.name_by_user or dev.name
+        if not name:
+            return None
+        return f"{DEFAULT_Z2M_BASE_TOPIC}/{name}/set"
+
+    def _read_valve_volumes(self) -> None:
+        """Gemessenes Tagesvolumen je Zone lesen und das Defizit
+        selbstkorrigierend verbuchen (Delta seit letztem Stand / Flaeche).
+
+        Geht vom GEMESSENEN Wert aus -> faengt auch manuelles Gieszen. Nur fuer
+        Zonen mit Flaeche (sonst keine L->mm-Umrechnung moeglich).
+        """
+        for zone in self.zones.values():
+            if not zone.valve:
+                continue
+            vol_eid = self._valve_volume_entity(zone.valve)
+            if not vol_eid:
+                continue
+            st = self.hass.states.get(vol_eid)
+            if st is None or str(st.state).lower() in _INVALID_STATES:
+                continue
+            try:
+                cur = float(st.state)
+            except (ValueError, TypeError):
+                continue
+            base = self._valve_base.get(zone.name)
+            self._valve_base[zone.name] = cur
+            if base is None:
+                continue
+            # Sensor-Tagesreset abfangen (faellt cur unter base -> neuer Tag).
+            delta = cur - base if cur >= base else cur
+            if delta <= 0:
+                continue
+            # Heute ausgebracht delta-akkumuliert -> robust gegen den taeglichen
+            # Sensor-Reset und gegen Tick-/Reset-Timing.
+            zone.gegossen_l += delta
+            # Defizit selbstkorrigierend: ausgebrachte BRUTTO-Liter -> NETTO-mm
+            # an der Pflanze (x Wirkungsgrad), dann abziehen. Konsistent zu
+            # liters_needed = Defizit*Flaeche/Wirkungsgrad. Nur mit Flaeche
+            # moeglich (L->mm); Zeit-Zonen ohne Flaeche korrigieren NICHT aus der
+            # Messung (dort schaetzt async_irrigate_zone beim Kommandieren).
+            if zone.area > 0:
+                eff = zone.efficiency if zone.efficiency > 0 else 1.0
+                zone.deficit = max(zone.deficit - (delta / zone.area) * eff, 0.0)
+
+    async def async_irrigate_zone(
+        self, zone_name: str, amount: float | None = None
+    ) -> None:
+        """Gieszvorgang am Ventil der Zone ausloesen (benutzer-initiiert).
+
+        Liter-Zone (Flaeche) -> quantitative (irrigation_capacity = Liter).
+        Zeit-Zone -> timed (irrigation_duration = Sekunden). Das Ventil giesst
+        autonom und schliesst selbst. amount ueberschreibt die Menge (L) bzw.
+        Zeit (min) je nach Zonen-Typ.
+        """
+        zone = self.zones.get(zone_name)
+        if zone is None or not zone.valve:
+            _LOGGER.warning("Iriy: Zone %r hat kein Ventil", zone_name)
+            return
+        topic = self._valve_set_topic(zone.valve)
+        if not topic:
+            _LOGGER.warning(
+                "Iriy: Set-Topic fuer Ventil %s nicht ermittelbar", zone.valve
+            )
+            return
+
+        if zone.area > 0:
+            liters = amount if amount is not None else (zone.liters_needed or 0.0)
+            if liters <= 0:
+                _LOGGER.info("Iriy: Zone %s hat kein Liter-Defizit", zone_name)
+                return
+            if liters > _VALVE_MAX_LITERS:  # Sicherheits-Deckel (physisches Ventil)
+                _LOGGER.warning(
+                    "Iriy: Zone %s – Liter %.0f ueber Limit %.0f, gekappt. "
+                    "Flaeche/Konfig pruefen.",
+                    zone_name,
+                    liters,
+                    _VALVE_MAX_LITERS,
+                )
+                liters = _VALVE_MAX_LITERS
+            payload = {
+                "cyclic_quantitative_irrigation": {
+                    "current_count": 0,
+                    "total_number": 1,
+                    "irrigation_capacity": int(round(liters)),
+                    "irrigation_interval": 0,
+                }
+            }
+            # Defizit kommt selbstkorrigierend aus dem gemessenen Volumen.
+        else:
+            minutes = amount if amount is not None else (zone.runtime_minutes or 0.0)
+            if not minutes or minutes <= 0:
+                _LOGGER.info("Iriy: Zone %s hat kein Zeit-Defizit", zone_name)
+                return
+            if minutes > _VALVE_MAX_MINUTES:  # Sicherheits-Deckel
+                _LOGGER.warning(
+                    "Iriy: Zone %s – Laufzeit %.0f min ueber Limit %.0f, gekappt.",
+                    zone_name,
+                    minutes,
+                    _VALVE_MAX_MINUTES,
+                )
+                minutes = _VALVE_MAX_MINUTES
+            payload = {
+                "cyclic_timed_irrigation": {
+                    "current_count": 0,
+                    "total_number": 1,
+                    "irrigation_duration": int(round(minutes * 60)),
+                    "irrigation_interval": 0,
+                }
+            }
+            # Zeit-Zone hat keine Flaeche -> Defizit nicht messbar herleitbar;
+            # um den kommandierten Betrag schaetzen.
+            eff = zone.efficiency if zone.efficiency > 0 else 1.0
+            zone.deficit = max(
+                zone.deficit - zone.throughput * (minutes / 60.0) * eff, 0.0
+            )
+
+        await self.hass.services.async_call(
+            "mqtt",
+            "publish",
+            {"topic": topic, "payload": json.dumps(payload)},
+            blocking=True,
+        )
+        _LOGGER.info("Iriy: Gieszen Zone %s -> %s %s", zone_name, topic, payload)
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+
     def _apply_to_zones(self, et0_mm: float, rain_mm: float) -> None:
         for zone in self.zones.values():
             etc = et0_mm * zone.kc
@@ -995,6 +1168,14 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             zone.deficit = min(max(zone.deficit, 0.0), zone.max_deficit)
 
     # --- Mitternacht ----------------------------------------------------
+
+    def _trim_recent(self, keep: int = 14) -> None:
+        """Tages-Logs (Regen, Zonen) auf die letzten `keep` Tage begrenzen."""
+        for d in sorted(self.rain_recent)[:-keep]:
+            del self.rain_recent[d]
+        for zlog in self.zone_recent.values():
+            for d in sorted(zlog)[:-keep]:
+                del zlog[d]
 
     @callback
     def _handle_midnight(self, now: datetime) -> None:
@@ -1012,6 +1193,17 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             if et0 is not None:
                 self._apply_to_zones(et0, self._rain_day)
 
+        # Tabellen-Tageslog des gerade beendeten Tages festhalten (Regen + je
+        # Zone Defizit & gegossene Liter), dann auf 14 Tage begrenzen.
+        ended = (now - timedelta(days=1)).date().isoformat()
+        self.rain_recent[ended] = round(self._rain_day, 2)
+        for zone in self.zones.values():
+            self.zone_recent.setdefault(zone.name, {})[ended] = {
+                "deficit": round(zone.deficit, 2),
+                "gegossen_l": round(zone.gegossen_l, 1),
+            }
+        self._trim_recent()
+
         for acc in self._day.values():
             acc.reset()
         self.et0_today = 0.0
@@ -1019,6 +1211,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._rain_day = 0.0
         for zone in self.zones.values():
             zone.etc_today = 0.0
+            zone.gegossen_l = 0.0  # neuer Tag; _read_valve_volumes fuellt neu
         self._current_day = now.date().isoformat()
         self.hass.async_create_task(self._async_save())
         self.async_set_updated_data(self._snapshot())
@@ -1152,6 +1345,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # Langlebiger Zustand wird IMMER wiederhergestellt (ueberlebt Tageswechsel):
         self.et0_daily = data.get("et0_daily")
         self.et0_recent = dict(data.get("et0_recent") or {})
+        self.rain_recent = dict(data.get("rain_recent") or {})
+        self.zone_recent = {
+            z: dict(v) for z, v in (data.get("zone_recent") or {}).items()
+        }
+        self._valve_base = dict(data.get("valve_base") or {})
         self._rain_last = data.get("rain_last")
         self._history_imported = bool(data.get("history_imported", False))
         self._last_finalized_day = data.get("last_finalized_day")
@@ -1162,6 +1360,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             if isinstance(zd, dict):
                 zone.deficit = float(zd.get("deficit", 0.0))
                 zone.etc_today = float(zd.get("etc_today", 0.0))
+                zone.gegossen_l = float(zd.get("gegossen_l", 0.0))
             else:  # altes Format: nur Defizit als Zahl
                 zone.deficit = float(zd)
 
@@ -1186,6 +1385,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 acc.reset()
             for zone in self.zones.values():
                 zone.etc_today = 0.0
+                zone.gegossen_l = 0.0  # neuer Tag waehrend HA aus
+            self._valve_base = {}  # Volumen-Baseline neu setzen (Sensor reset)
             self._current_day = today
 
     async def _async_save(self) -> None:
@@ -1196,13 +1397,20 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 "last_finalized_day": self._last_finalized_day,
                 "et0_daily": self.et0_daily,
                 "et0_recent": self.et0_recent,
+                "rain_recent": self.rain_recent,
+                "zone_recent": self.zone_recent,
+                "valve_base": self._valve_base,
                 "et0_today": self.et0_today,
                 "et0_rate": self.et0_rate,
                 "rain_last": self._rain_last,
                 "rain_day": self._rain_day,
                 "day_acc": {k: a.as_dict() for k, a in self._day.items()},
                 "zones": {
-                    n: {"deficit": z.deficit, "etc_today": z.etc_today}
+                    n: {
+                        "deficit": z.deficit,
+                        "etc_today": z.etc_today,
+                        "gegossen_l": z.gegossen_l,
+                    }
                     for n, z in self.zones.items()
                 },
             }

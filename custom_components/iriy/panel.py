@@ -30,6 +30,7 @@ from .const import (
     CONF_ZONE_MAX_DEFICIT,
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
+    CONF_ZONE_VALVE,
     CONF_ZONES,
     DEFAULT_EFFICIENCY,
     DEFAULT_KC,
@@ -122,10 +123,12 @@ def _instance_zones(coord: IriyCoordinator) -> list[dict]:
                 "max_deficit": zone.max_deficit,
                 "area": raw.get(CONF_ZONE_AREA),
                 "by_area": zone.by_area,
+                "valve": zone.valve,
                 "deficit": round(zone.deficit, 2),
                 "etc_today": round(zone.etc_today, 2),
                 "runtime_minutes": zone.runtime_minutes,
                 "liters_needed": zone.liters_needed,
+                "gegossen_l": round(zone.gegossen_l, 1),
             }
         )
     return out
@@ -164,6 +167,11 @@ async def ws_overview(
                     {"date": k, "mm": v}
                     for k, v in sorted(coord.et0_recent.items(), reverse=True)
                 ],
+                "rain_recent": coord.rain_recent,
+                "zone_history": coord.zone_recent,
+                "rain_today": round(d.diagnostics.get("rain_today_mm", 0.0), 1)
+                if d.diagnostics
+                else None,
                 "zones": _instance_zones(coord),
             }
         )
@@ -236,6 +244,11 @@ async def ws_zone_save(
         zone[CONF_ZONE_AREA] = _f(area, 0.0)
     else:
         zone.pop(CONF_ZONE_AREA, None)  # leeres Feld -> Flaeche entfernen
+    valve = zone_in.get(CONF_ZONE_VALVE)
+    if valve:
+        zone[CONF_ZONE_VALVE] = str(valve)
+    else:
+        zone.pop(CONF_ZONE_VALVE, None)
 
     if original:
         zones = [zone if z.get(CONF_ZONE_NAME) == original else z for z in zones]

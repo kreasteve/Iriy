@@ -33,3 +33,28 @@ add_water:
           max: 100
           step: 0.1
           unit_of_measurement: mm
+
+irrigate_zone:
+  name: Zone giessen
+  description: >
+    Loest am Ventil der Zone einen Giessvorgang aus. Flaechen-Zone -> Liter
+    (quantitative), Zeit-Zone -> Laufzeit (timed). Ohne Menge wird das aktuelle
+    Defizit verwendet. Das Ventil giesst autonom und schliesst selbst.
+  fields:
+    zone:
+      name: Zone
+      description: Name der Zone (muss ein Ventil zugewiesen haben).
+      required: true
+      selector:
+        text:
+    amount:
+      name: Menge (L bzw. min)
+      description: >
+        Optional. Bei Flaechen-Zonen Liter, bei Zeit-Zonen Minuten. Leer =
+        aktuelles Defizit.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 1

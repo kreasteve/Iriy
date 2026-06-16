@@ -26,6 +26,7 @@ class IriyPanel extends HTMLElement {
     this._data = null; // { instances:[...], kc_table:{} }
     this._entryId = null;
     this._form = null; // null | {mode:'add'|'edit', original?, zone?}
+    this._wunit = "mm"; // Anzeige-Einheit der "Gegossen"-Spalte: mm | L | T
     this._busy = false;
     this._error = "";
     this._timer = null;
@@ -176,7 +177,34 @@ class IriyPanel extends HTMLElement {
       this._render();
     } else if (action === "delete-zone") {
       this._deleteZone(el.dataset.name);
+    } else if (action === "irrigate") {
+      this._irrigate(el.dataset.name);
+    } else if (action === "wunit") {
+      this._wunit = el.dataset.unit;
+      this._render();
     }
+  }
+
+  async _irrigate(name) {
+    const inst = this._instance();
+    const z = (inst.zones || []).find((x) => x.name === name);
+    const target = z
+      ? z.area > 0
+        ? `${NUM(z.liters_needed, 0)} L`
+        : `${NUM(z.runtime_minutes, 0)} min`
+      : "";
+    if (!confirm(`Zone „${name}" jetzt gießen (${target})?\nDas öffnet das Ventil.`))
+      return;
+    this._busy = true;
+    this._render();
+    try {
+      await this._hass.callService("iriy", "irrigate_zone", { zone: name });
+      await this._afterMutation();
+    } catch (e) {
+      this._error = "Gießen fehlgeschlagen: " + (e.message || e.code || e);
+    }
+    this._busy = false;
+    this._render();
   }
 
   async _deleteZone(name) {
@@ -210,6 +238,7 @@ class IriyPanel extends HTMLElement {
       efficiency: f.elements.efficiency.value,
       max_deficit: f.elements.max_deficit.value,
       by_area: byArea,
+      valve: f.elements.valve ? f.elements.valve.value : "",
     };
     if (!zone.name) {
       this._error = "Bitte einen Zonennamen angeben.";
@@ -280,6 +309,7 @@ class IriyPanel extends HTMLElement {
       efficiency: f.elements.efficiency.value,
       max_deficit: f.elements.max_deficit.value,
       by_area: f.elements.by_area ? f.elements.by_area.checked : false,
+      valve: f.elements.valve ? f.elements.valve.value : "",
     };
   }
 
@@ -362,51 +392,109 @@ class IriyPanel extends HTMLElement {
       </div>`;
   }
 
+  // --- Umrechnungs-Helfer für die Tabelle -----------------------------
+  _hhmm(min) {
+    min = Math.round(min || 0);
+    if (min < 60) return min + " min";
+    return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")} h`;
+  }
+  _litersFromMm(z, mm) {
+    const eff = z.efficiency > 0 ? z.efficiency : 1;
+    return (mm * (z.area || 0)) / eff;
+  }
+  _minutesFromMm(z, mm) {
+    const eff = z.efficiency > 0 ? z.efficiency : 1;
+    return z.throughput > 0 ? (mm / (z.throughput * eff)) * 60 : 0;
+  }
+  // Defizit-Zelle: Flächen-Zone -> Liter, Zeit-Zone -> hh:mm.
+  _deficitLive(z) {
+    if (z.area > 0) return z.liters_needed != null ? NUM(z.liters_needed, 0) + " L" : "–";
+    return z.runtime_minutes != null ? this._hhmm(z.runtime_minutes) : "–";
+  }
+  _deficitFromMm(z, mm) {
+    if (mm == null) return "–";
+    if (z.area > 0) return NUM(this._litersFromMm(z, mm), 0) + " L";
+    return this._hhmm(this._minutesFromMm(z, mm));
+  }
+  // Gegossen-Zelle (gemessene Liter), Anzeige je nach mm/L/T-Umschalter.
+  _watered(z, liters) {
+    if (liters == null) return "–";
+    if (this._wunit === "L") return NUM(liters, 1) + " L";
+    if (z.area > 0) {
+      const mm = liters / z.area;
+      if (this._wunit === "mm") return NUM(mm, 1) + " mm";
+      return this._hhmm(this._minutesFromMm(z, mm)); // "T"
+    }
+    return "–"; // ohne Fläche nicht in mm/T umrechenbar
+  }
+
   _table(inst) {
     const days = inst.last_days || [];
-    // ET0 je Tag – „heute" (vorläufig) zuerst, dann Verlauf mit Wochentags-Label.
-    const et0Rows = [];
-    if (inst.et0_today != null)
-      et0Rows.push(
-        `<tr><td>heute</td><td class="r">${NUM(inst.et0_today)} mm <small class="muted">(läuft)</small></td></tr>`
-      );
-    for (const d of days)
-      et0Rows.push(
-        `<tr><td>${this._dayLabel(d.date)}</td><td class="r">${NUM(d.mm)} mm</td></tr>`
-      );
-    const et0Table = et0Rows.length
-      ? `<table><thead><tr><th>Tag</th><th class="r">ET0</th></tr></thead><tbody>${et0Rows.join(
-          ""
-        )}</tbody></table>`
-      : `<p class="muted">Noch keine Tageswerte.</p>`;
-
-    // Zonen mit aktuellen Werten (Defizit + die zutreffende Steuergröße).
     const zones = inst.zones || [];
-    let zoneTable = "";
-    if (zones.length) {
-      const zr = zones
-        .map(
-          (z) => `<tr>
-            <td>${ESC(z.name)}</td>
-            <td class="r">${NUM(z.deficit)} mm</td>
-            <td class="r">${
-              z.runtime_minutes != null ? NUM(z.runtime_minutes, 0) + " min" : "–"
-            }</td>
-            <td class="r">${
-              z.liters_needed != null ? NUM(z.liters_needed, 1) + " L" : "–"
-            }</td>
-          </tr>`
-        )
+    const rain = inst.rain_recent || {};
+    const zhist = inst.zone_history || {};
+    const U = this._wunit;
+
+    const zoneHeads = zones
+      .map(
+        (z) =>
+          `<th class="r">${ESC(z.name)} Defizit</th><th class="r">${ESC(
+            z.name
+          )} Gegossen</th>`
+      )
+      .join("");
+    const chip = (u, lbl) =>
+      `<button class="chip${U === u ? " on" : ""}" data-action="wunit" data-unit="${u}">${lbl}</button>`;
+    const row = (label, et0, rainMm, cells) => `<tr>
+        <td>${label}</td>
+        <td class="r">${et0 != null ? NUM(et0) : "–"}</td>
+        <td class="r">${rainMm != null ? NUM(rainMm, 1) : "–"}</td>
+        ${cells}
+      </tr>`;
+
+    const rows = [
+      row(
+        "heute",
+        inst.et0_today,
+        inst.rain_today,
+        zones
+          .map(
+            (z) =>
+              `<td class="r">${this._deficitLive(z)}</td><td class="r">${this._watered(
+                z,
+                z.gegossen_l
+              )}</td>`
+          )
+          .join("")
+      ),
+    ];
+    for (const d of days) {
+      const cells = zones
+        .map((z) => {
+          const h = (zhist[z.name] || {})[d.date];
+          return `<td class="r">${
+            h ? this._deficitFromMm(z, h.deficit) : "–"
+          }</td><td class="r">${h ? this._watered(z, h.gegossen_l) : "–"}</td>`;
+        })
         .join("");
-      zoneTable = `
-        <h3>Zonen</h3>
-        <table><thead><tr><th>Zone</th><th class="r">Defizit</th><th class="r">Laufzeit</th><th class="r">Menge</th></tr></thead><tbody>${zr}</tbody></table>`;
+      rows.push(row(this._dayLabel(d.date), d.mm, rain[d.date], cells));
     }
+
     return `
       <div class="card">
-        <h2>Tabelle</h2>
-        ${et0Table}
-        ${zoneTable}
+        <div class="cardhead">
+          <h2>Tabelle</h2>
+          <div class="chips">Gegossen: ${chip("mm", "mm")}${chip("L", "L")}${chip(
+      "T",
+      "T"
+    )}</div>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Tag</th><th class="r">ET0</th><th class="r">Regen</th>${zoneHeads}</tr></thead>
+            <tbody>${rows.join("")}</tbody>
+          </table>
+        </div>
       </div>`;
   }
 
@@ -431,6 +519,13 @@ class IriyPanel extends HTMLElement {
             <span class="badge">${badge.join(" · ")}</span>
           </div>
           <div class="zact">
+            ${
+              z.valve
+                ? `<button class="icon" data-action="irrigate" data-name="${ESC(
+                    z.name
+                  )}" title="Jetzt gießen">💧</button>`
+                : ""
+            }
             <button class="icon" data-action="edit-zone" data-name="${ESC(
               z.name
             )}" title="Bearbeiten">✏️</button>
@@ -458,6 +553,23 @@ class IriyPanel extends HTMLElement {
         </div>
         ${this._form ? this._zoneForm() : list}
       </div>`;
+  }
+
+  _valveOptions(selected) {
+    const states = (this._hass && this._hass.states) || {};
+    const ids = Object.keys(states)
+      .filter((id) => id.startsWith("switch.") || id.startsWith("valve."))
+      .sort();
+    const opt = (val, label, sel) =>
+      `<option value="${ESC(val)}"${sel ? " selected" : ""}>${ESC(label)}</option>`;
+    let out = opt("", "— kein Ventil —", !selected);
+    for (const id of ids) {
+      const fn = (states[id].attributes || {}).friendly_name || id;
+      out += opt(id, fn, id === selected);
+    }
+    // Falls das gespeicherte Ventil aktuell nicht in der Liste ist, trotzdem zeigen.
+    if (selected && !ids.includes(selected)) out += opt(selected, selected, true);
+    return out;
   }
 
   _zoneForm() {
@@ -507,6 +619,11 @@ class IriyPanel extends HTMLElement {
           </div>
           ${field("efficiency", "Wirkungsgrad (0–1)", "type=number step=0.05 min=0.1 max=1", z.efficiency ?? 0.9, "")}
           ${field("max_deficit", "Max. Defizit (mm)", "type=number step=1 min=1", z.max_deficit ?? 30, "")}
+          <label class="field">
+            <span>Ventil (optional)</span>
+            <select id="valve" name="valve">${this._valveOptions(z.valve)}</select>
+            <small class="muted">z2m-Switch des Ventils – für „Jetzt gießen" + gegossene Liter</small>
+          </label>
         </div>
         <div class="formact">
           <button type="button" class="ghost" data-action="cancel-zone">Abbrechen</button>
@@ -541,7 +658,14 @@ IriyPanel.styles = `
   .chart .bval { fill: var(--secondary-text-color); font-size: 2px; text-anchor: middle; }
   .xlabels { display:flex; margin-top:4px; text-align:center; }
   .xlabels span { font-size:.7rem; }
-  table { width:100%; border-collapse: collapse; }
+  .chips { display:flex; align-items:center; gap:6px; font-size:.82rem; color: var(--secondary-text-color); }
+  .chip { background: transparent; border:1px solid var(--divider-color,#ccc); color: var(--primary-text-color);
+          padding: 3px 10px; border-radius: 14px; font-size:.82rem; }
+  .chip.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color,#fff); border-color: transparent; }
+  .tablewrap { overflow-x: auto; }
+  select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc);
+           background: var(--primary-background-color); color: var(--primary-text-color); }
+  table { width:100%; border-collapse: collapse; white-space: nowrap; }
   th, td { padding: 6px 8px; border-bottom: 1px solid var(--divider-color, #e0e0e0); font-size:.9rem; }
   th { text-align:left; color: var(--secondary-text-color); font-weight:500; }
   .r { text-align:right; }

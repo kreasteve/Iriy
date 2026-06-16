@@ -43,7 +43,11 @@ CONF_ZONE_AREA = "area"               # m2 (optional, fuer spaetere Liter-Bilanz
 CONF_ZONE_MAX_DEFICIT = "max_deficit"  # mm, Kappung des Buckets (RAW)
 CONF_ZONE_EFFICIENCY = "efficiency"   # 0..1
 CONF_ZONE_BY_AREA = "by_area"         # True: nur Liter ueber Flaeche, KEINE Laufzeit
-CONF_ZONE_VALVE = "valve"             # optional: switch/valve-Entity (Zukunft)
+CONF_ZONE_VALVE = "valve"             # optional: switch-Entity des Ventils (z2m)
+
+# z2m-Ventilsteuerung (GiEX/Tuya cyclic irrigation)
+DEFAULT_Z2M_BASE_TOPIC = "zigbee2mqtt"
+VALVE_VOLUME_SUFFIX = "_daily_irrigation_volume"  # Mess-Sensor am selben Geraet
 
 # --- Neutrale Fallback-Standardwerte -----------------------------------
 # Nur Rueckfall, falls der HA-Standort leer ist. Der echte Standort wird im

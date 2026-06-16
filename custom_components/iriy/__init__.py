@@ -25,15 +25,23 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_RECALCULATE = "recalculate"
 SERVICE_RESET_BUCKET = "reset_bucket"
 SERVICE_ADD_WATER = "add_water"
+SERVICE_IRRIGATE = "irrigate_zone"
 
 ATTR_ZONE = "zone"
 ATTR_MM = "mm"
+ATTR_AMOUNT = "amount"
 
 _RESET_SCHEMA = vol.Schema({vol.Optional(ATTR_ZONE): cv.string})
 _ADD_WATER_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_ZONE): cv.string,
         vol.Required(ATTR_MM): vol.Coerce(float),
+    }
+)
+_IRRIGATE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ZONE): cv.string,
+        vol.Optional(ATTR_AMOUNT): vol.Coerce(float),
     }
 )
 
@@ -130,6 +138,13 @@ def _register_services(hass: HomeAssistant) -> None:
         for coord in _coordinators(hass):
             coord.add_water(zone, mm)
 
+    async def _irrigate(call: ServiceCall) -> None:
+        zone = call.data[ATTR_ZONE]
+        amount = call.data.get(ATTR_AMOUNT)
+        for coord in _coordinators(hass):
+            if zone in coord.zones:
+                await coord.async_irrigate_zone(zone, amount)
+
     hass.services.async_register(DOMAIN, SERVICE_RECALCULATE, _recalculate)
     hass.services.async_register(
         DOMAIN, SERVICE_RESET_BUCKET, _reset_bucket, schema=_RESET_SCHEMA
@@ -137,8 +152,16 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_WATER, _add_water, schema=_ADD_WATER_SCHEMA
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_IRRIGATE, _irrigate, schema=_IRRIGATE_SCHEMA
+    )
 
 
 def _unregister_services(hass: HomeAssistant) -> None:
-    for service in (SERVICE_RECALCULATE, SERVICE_RESET_BUCKET, SERVICE_ADD_WATER):
+    for service in (
+        SERVICE_RECALCULATE,
+        SERVICE_RESET_BUCKET,
+        SERVICE_ADD_WATER,
+        SERVICE_IRRIGATE,
+    ):
         hass.services.async_remove(DOMAIN, service)
