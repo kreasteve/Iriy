@@ -458,7 +458,14 @@ class IriyPanel extends HTMLElement {
       const mm = rec.fc_rain_mm != null ? `${NUM(rec.fc_rain_mm, 1)} mm` : "Regen";
       return `🌧️ Heute nicht gegossen – Regen erwartet (${mm})`;
     }
-    if (z.gegossen_l > 0) return `💧 Heute gegossen: ${NUM(z.gegossen_l, 1)} L`;
+    if (z.gegossen_l > 0) {
+      // Einheitlich in mm (über die Fläche); ohne Fläche als Liter-Fallback.
+      const txt =
+        z.area > 0
+          ? `${NUM(z.gegossen_l / z.area, 1)} mm`
+          : `${NUM(z.gegossen_l, 1)} L`;
+      return `💧 Heute gegossen: ${txt}`;
+    }
     if (inst.auto && inst.auto.enabled)
       return `⏳ Heute noch nicht gegossen (Automatik prüft ${String(
         inst.auto.hour
@@ -910,9 +917,11 @@ IriyPanel.styles = `
   .auto.off { background: var(--secondary-background-color, #f1f1f1); color: var(--secondary-text-color); }
   .autorow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .autofc { margin-top: 6px; }
-  .mini { border:1px solid var(--divider-color,#ccc); background: transparent; color: var(--primary-text-color);
-          padding: 3px 10px; border-radius: 12px; font-size:.78rem; cursor:pointer; }
-  .mini.on { background: #4caf50; color:#fff; border-color: transparent; }
+  .mini { display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;
+          min-width:108px; min-height:28px; border:1px solid var(--divider-color,#ccc); background: transparent;
+          color: var(--primary-text-color); padding: 4px 12px; border-radius: 14px; font-size:.78rem;
+          line-height:1.2; cursor:pointer; }
+  .mini.on { background: #4caf50; color:#fff; border-color: #4caf50; }
   .mini.ghost { color: var(--secondary-text-color); }
   .zstatus { font-size:.8rem; margin-top:2px; }
   .auto-hint { font-size:.74rem; }
