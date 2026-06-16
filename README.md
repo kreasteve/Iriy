@@ -1,18 +1,20 @@
 # 🌱 Iriy – Smart Irrigation für Home Assistant
 
-**Iriy** (weiblicher Bewässerungs-Bot, von *irrigation*) berechnet aus den
+**Iriy** (Bewässerungs-Bot, vom englischen *irrigation*) berechnet aus den
 Sensoren deiner Wetterstation die **Referenz-Verdunstung (ET₀)** nach
 **FAO-56 Penman-Monteith** und führt pro Bewässerungszone eine laufende
 **Wasser-Defizit-Bilanz**. Daraus leitet sie ab, wie viel nachgegossen werden
 muss – und steuert das später automatisch (Ventile, Strategien).
 
-> Status: **v0.1 – Fundament.** ET₀ (Tag + stündlich live) und Zonen-Defizit
-> funktionieren. Ventilsteuerung, Strategien und die editierbare Oberfläche
-> sind als saubere Erweiterungspunkte vorbereitet (siehe [Roadmap](#roadmap)).
+> Status: **v0.2 – Fundament + eigene Oberfläche.** ET₀ (Tag + stündlich live)
+> und Zonen-Defizit funktionieren, und es gibt ein **eigenes Panel in der
+> Seitenleiste** (Übersicht, Verlauf, Tabelle, Zonen-Editor). Ventilsteuerung
+> und Strategien sind als saubere Erweiterungspunkte vorbereitet (siehe
+> [Roadmap](#roadmap)).
 
 ---
 
-## Was v0.1 schon kann
+## Was Iriy kann
 
 - Liest die Rohsensoren deiner Station (Temperatur, Feuchte, Wind, Strahlung,
   optional Druck und Regen) – komplett **per UI** ausgewählt, kein YAML.
@@ -20,11 +22,18 @@ muss – und steuert das später automatisch (Ventile, Strategien).
   - **Tageswert** (kanonisch, vertrauenswürdig): Summe der FAO-56-Stunden­
     gleichung (Gl. 53) über die **Stundenstatistik des Recorders** – zeit­
     gewichtet und lückenrobust (unabhängig davon, ob HA durchlief). Die Zahl
-    für die Morgen-Automation; wird kurz nach Mitternacht finalisiert. (Die
-    reine Tagesmittel-Gleichung dient nur noch als Fallback ohne Stundenmodus.)
+    für die Morgen-Automation; wird um Mitternacht für den abgeschlossenen Tag
+    finalisiert. (Die reine Tagesmittel-Gleichung dient nur noch als Fallback
+    ohne Stundenmodus.)
   - **Stündlich live**: dieselbe Stundengleichung, die sich zu „heute bisher"
     aufsummiert und das Zonen-Defizit in Echtzeit speist – reagiert sofort
     auf Regen.
+- **Eigener-Tag-Datierung**: Der ET₀ von Tag *D* liegt auf Tag *D* selbst
+  (lokale Mitternacht), ein Wert pro Tag – die Tageshistorie ist damit korrekt
+  datiert und nicht „um einen Tag verschoben".
+- **Einmalige Historie beim Einrichten** (optional): Iriy befüllt aus der
+  vorhandenen Recorder-History die letzten X Tage ET₀ vor – danach pflegt es
+  den Verlauf selbst. Kein Service, kein Button, kein laufender Import.
 - Pro Zone ein **Defizit-Bucket** (mm) und eine **empfohlene Laufzeit** (min).
 - Übersteht Neustarts (persistente Bilanz via HA-Storage).
 - Services: `iriy.recalculate`, `iriy.reset_bucket`, `iriy.add_water`.
@@ -38,7 +47,26 @@ muss – und steuert das später automatisch (Ventile, Strategien).
 | `sensor.iriy_et0_rate` | aktuelle ET-Rate [mm/h] |
 | `sensor.iriy_<zone>_defizit` | Wasserdefizit der Zone [mm] |
 | `sensor.iriy_<zone>_laufzeit` | nötige Bewässerungszeit [min] |
-| `button.iriy_et0_verlauf_neu_berechnen` | ET₀-Verlauf der letzten Tage neu berechnen (idempotenter Upsert) |
+
+---
+
+## Die Oberfläche (Sidebar-Panel)
+
+Iriy bringt einen **eigenen Eintrag „Iriy" in der HA-Seitenleiste** mit – eine
+eigenständige Oberfläche (kein Lovelace-Dashboard nötig), die auf allen HA-
+Installationsarten läuft (`panel_custom`, Teil des Pakets):
+
+- **Übersicht**: ET₀ gestern / heute / Rate plus Wetter-Diagnose
+  (Temperatur, Feuchte, Wind, Strahlung, Regen).
+- **Verlauf**: 7-Tage-Balkendiagramm der ET₀-Tageswerte.
+- **Tabelle**: die letzten Tage als Liste – aus derselben Tagesstatistik wie
+  das Diagramm, also deckungsgleich.
+- **Zonen-Editor**: Zonen direkt im Panel **anlegen, bearbeiten und löschen**
+  (Name, Kc mit Vorschlagsliste, Fläche m², Durchfluss, Wirkungsgrad,
+  Max-Defizit).
+
+Sensoren und Standort werden weiterhin beim Einrichten bzw. übers Zahnrad
+(Optionen) gepflegt.
 
 ---
 
@@ -91,26 +119,38 @@ Rohsensoren ─▶ Akkumulatoren (Tag + Intervall) ─▶ et.py (FAO-56) ─▶ 
 | `et.py` | **Reiner Rechenkern**, keine HA-Abhängigkeit → isoliert testbar. Tages- *und* Stundengleichung. |
 | `coordinator.py` | Sammelt Sensorwerte, hält die Bilanz, persistiert sie. Die „Drehscheibe". |
 | `config_flow.py` | Einrichtung **und** Pflege per UI (inkl. Zonen-Menü). |
+| `panel.py` | Sidebar-Panel (`panel_custom`) + WebSocket-API für die eigene Oberfläche. |
+| `frontend/iriy-panel.js` | Die Web-Component der Oberfläche (Vanilla, ohne Build-Kette). |
 | `sensor.py` | Entitäten aus dem Koordinator. |
 | `const.py` | Konstanten, Standardwerte, Kc-Referenztabelle. |
 
 **Was wo editierbar ist:**
-- **Sensoren / Standort / Zonen / Kc** → komplett über die HA-UI (Zahnrad).
+- **Zonen** → direkt im Iriy-Panel (Seitenleiste).
+- **Sensoren / Standort / Parameter** → über die HA-UI (Zahnrad / Optionen).
 - **Die Formel selbst** → `et.py` (sauber getrennt, getestet).
 
 ---
 
 ## Installation
 
+### HACS (custom repository)
+`https://github.com/kreasteve/Iriy` als benutzerdefiniertes Repository
+(Kategorie *Integration*) hinzufügen, installieren und Home Assistant neu
+starten.
+
 ### Manuell
 1. Ordner `custom_components/iriy/` nach `<config>/custom_components/` kopieren.
 2. Home Assistant neu starten.
-3. **Einstellungen → Geräte & Dienste → Integration hinzufügen → „Iriy"**.
-4. Sensoren und Standort auswählen, fertig. Zonen danach übers Zahnrad anlegen.
 
-### HACS (custom repository)
-`https://github.com/kreasteve/Iriy` als benutzerdefiniertes Repository
-(Kategorie *Integration*) hinzufügen.
+### Einrichten
+1. **Einstellungen → Geräte & Dienste → Integration hinzufügen → „Iriy"**.
+2. Sensoren und Standort auswählen, optional die Historie der letzten Tage
+   vorbefüllen lassen.
+3. Der Eintrag **„Iriy"** erscheint in der Seitenleiste – dort Zonen anlegen.
+
+> Nach einem Update, das das Panel neu registriert, einmal Home Assistant
+> neu starten, damit die Seitenleiste den Eintrag zieht (Browser ggf. hart
+> neu laden).
 
 ---
 
@@ -130,27 +170,26 @@ pytest tests/ -v
 ## Roadmap
 
 - [x] **v0.1** ET₀ (Tag + stündlich), Zonen-Defizit, Config-Flow, Persistenz
+- [x] **Historie beim Einrichten** aus der Recorder-History rekonstruieren und
+      als korrekt datierte ET₀-Tagesstatistik einspeisen (einmalig, automatisch)
+- [x] **v0.2 – Eigenes Sidebar-Panel**: Übersicht, 7-Tage-Verlauf + Tabelle,
+      Zonen-Editor
+- [ ] **Einstellungen im Panel** (Sensoren/Parameter direkt dort ändern)
 - [ ] **Ventile**: Zone optional an einen `switch`/`valve` koppeln
 - [ ] **Strategien** (pluggable): „Morgens um 4 das Defizit nachgießen",
       Bewässerungsfenster, Max-Laufzeit, Regen-Sperre, Liter statt Minuten
 - [ ] **Saisonale Kc-Kurven** (Frühling/Hochsommer/Hitzewelle)
-- [x] **Historischer Backfill**: Tagesbilanz beim Einrichten aus der Recorder-
-      History rekonstruieren; vergangene Tage als ET₀-Langzeitstatistik einspeisen
-      (`iriy.backfill`, `days`-Parameter)
-- [ ] **Editierbare Oberfläche** (eigenes Lovelace-Panel, z2m-Stil) für Zonen,
-      Strategien und Live-Bilanz
-- [ ] **HACS-Release** + Übersetzungen
 
 ---
 
-## Dashboard: 7-Tage-Diagramm
+## Alternative: ET₀ im Dashboard (Statistik-Karte)
 
-Iriy schreibt den ET₀-Tagesverlauf **direkt in die Entität `sensor.iriy_et0_tag`**
-(„ET0 (gestern)") als korrekt datierte Tagesstatistik — Wert von Tag D liegt auf
-Tag D, ein Wert pro Tag, vom **Button/Finalizer** beliebig viele Tage zurück neu
-rechenbar. (Die Entität trägt bewusst kein `state_class`, damit HA sie nicht
-zusätzlich – und um einen Tag verschoben – selbst aufzeichnet.) Anzeige mit einer
-**Statistik-Karte** (Bordmittel, keine HACS-Karte nötig):
+Wer den Verlauf zusätzlich im eigenen Dashboard möchte: Iriy schreibt den
+ET₀-Tagesverlauf direkt in die Entität `sensor.iriy_et0_gestern` als korrekt
+datierte Tagesstatistik (ein Wert pro Tag, auf dem eigenen Tag). Die Entität
+trägt bewusst **kein** `state_class`, damit HA sie nicht zusätzlich – und um
+einen Tag verschoben – selbst aufzeichnet. Anzeige mit einer **Statistik-Karte**
+(Bordmittel, keine HACS-Karte nötig):
 
 ```yaml
 type: statistics-graph
@@ -163,6 +202,11 @@ stat_types:
 entities:
   - sensor.iriy_et0_gestern   # entity_id je nach HA-Sprache (engl.: ..._yesterday)
 ```
+
+> Hinweis: In der HA-Verlaufsansicht (More-Info) wird ein Tageswert wegen der
+> Stunden-Bucket-Beschriftung mitunter bei 01:00 angezeigt – die Daten liegen
+> aber korrekt auf 00:00. Die Statistik-Karte mit `period: day` beschriftet
+> nach Datum und zeigt das sauber.
 
 Ein kombiniertes **Wetter**-Diagramm (Sonne, Wind, Regen) mit zwei Achsen geht mit
 der **[ApexCharts-Card](https://github.com/RomRider/apexcharts-card)** (über HACS).
@@ -206,17 +250,9 @@ series:
 ```
 
 **Wichtig:** Bei top-level `yaxis:` *nicht* zusätzlich `yaxis` in `apex_config`
-setzen (würde überschrieben). Defizit/Laufzeit je Zone zeigst du am besten mit
-einer `tile`- oder `entities`-Karte (`sensor.iriy_<zone>_defizit`,
-`sensor.iriy_<zone>_laufzeit`).
+setzen (würde überschrieben).
 
 ---
-
-## Dank
-
-Aufgebaut auf einem vorhandenen FAO-56-Ansatz (`smart_et`) für die Ecowitt
-WS90 – Rechenkern erweitert (Stundengleichung), Architektur auf Config-Flow,
-Koordinator und Zonen-Bilanz umgestellt.
 
 ## Lizenz
 

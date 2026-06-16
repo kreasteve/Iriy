@@ -19,7 +19,6 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, PLATFORMS
 from .coordinator import IriyCoordinator
-from .panel import async_register_frontend
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,7 +49,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
     _register_services(hass)
-    await async_register_frontend(hass)
+    # Sidebar-Panel registrieren – bewusst NICHT-FATAL: ein Frontend-Problem
+    # (oder eine fehlende Frontend-API) darf die Kern-Integration (Sensoren,
+    # ET0, Zonen) niemals verhindern.
+    try:
+        from .panel import async_register_frontend
+
+        await async_register_frontend(hass)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception(
+            "Iriy: Sidebar-Panel konnte nicht registriert werden – "
+            "Integration läuft ohne Panel weiter"
+        )
 
     # EINMALIG beim ersten Einrichten: optional die letzten X Tage als Historie
     # vorbefuellen (Haken im Setup). Das Flag verhindert erneutes Befuellen bei
