@@ -19,6 +19,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, PLATFORMS
 from .coordinator import IriyCoordinator
+from .panel import async_register_frontend
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
     _register_services(hass)
+    await async_register_frontend(hass)
 
     # EINMALIG beim ersten Einrichten: optional die letzten X Tage als Historie
     # vorbefuellen (Haken im Setup). Das Flag verhindert erneutes Befuellen bei
@@ -67,6 +69,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Aktuellen "gestern"-Wert setzen; ab hier fuehrt HA Verlauf + Statistik des
     # Sensors voellig selbst (kein laufender Import noetig).
     await coordinator.async_finalize_yesterday()
+    # Letzte Tage aus der eigenen Tagesstatistik in das Attribut spiegeln, damit
+    # die Dashboard-Tabelle sofort vollstaendig ist (auch nach Upgrade).
+    await coordinator.async_sync_recent_from_stats()
     return True
 
 
@@ -76,7 +81,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         coordinator: IriyCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_shutdown()
-        if not hass.data[DOMAIN]:
+        if not _coordinators(hass):
             _unregister_services(hass)
     return unload_ok
 
@@ -87,7 +92,13 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 def _coordinators(hass: HomeAssistant) -> list[IriyCoordinator]:
-    return list(hass.data.get(DOMAIN, {}).values())
+    # hass.data[DOMAIN] enthaelt neben den Koordinatoren auch das Frontend-Flag
+    # (bool) -> nur echte Koordinatoren zurueckgeben.
+    return [
+        c
+        for c in hass.data.get(DOMAIN, {}).values()
+        if isinstance(c, IriyCoordinator)
+    ]
 
 
 def _register_services(hass: HomeAssistant) -> None:

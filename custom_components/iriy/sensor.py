@@ -72,6 +72,12 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
 def _et0_attrs(data: IriyData) -> dict:
     attrs = dict(data.diagnostics)
     attrs["provisional_today"] = data.et0_daily_provisional
+    # Letzte Tage (neueste zuerst) als Attribut fuer die Dashboard-Tabelle.
+    # Die Langzeitstatistik ist die Wahrheit, aber per Jinja nicht lesbar.
+    attrs["last_days"] = [
+        {"date": d, "mm": v}
+        for d, v in sorted(data.et0_recent.items(), reverse=True)
+    ]
     return attrs
 
 

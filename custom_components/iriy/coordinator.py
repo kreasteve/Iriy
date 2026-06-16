@@ -164,6 +164,7 @@ class IriyData:
     et0_rate: float | None = None           # letztes Intervall [mm/h]
     zones: dict[str, ZoneState] = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
+    et0_recent: dict[str, float] = field(default_factory=dict)  # ISO-Datum -> mm
 
 
 class IriyCoordinator(DataUpdateCoordinator[IriyData]):
@@ -224,6 +225,10 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
         # ET-Spuren
         self.et0_daily: float | None = None
+        # Rollender Verlauf der letzten Tage (ISO-Datum -> mm) fuer die
+        # Dashboard-Tabelle; gespeist aus der importierten Tagesstatistik,
+        # persistiert im Store (ueberlebt Neustarts).
+        self.et0_recent: dict[str, float] = {}
         self.et0_today = 0.0
         self.et0_rate: float | None = None
         self._last_tick: datetime | None = None
@@ -691,10 +696,73 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             "unit_of_measurement": "mm",
         }
         async_import_statistics(self.hass, metadata, points)
+        # Rollenden Verlauf fuer die Dashboard-Tabelle nachfuehren (Statistik ist
+        # die Wahrheit, aber per Jinja/Template nicht lesbar -> als Attribut spiegeln).
+        for day, value in by_day.items():
+            self.et0_recent[day.isoformat()] = value
+        for old in sorted(self.et0_recent)[:-14]:  # nur die letzten 14 Tage halten
+            del self.et0_recent[old]
         _LOGGER.info(
             "Iriy: %d Tage ET0 in die Entitaet geschrieben (%s)", len(points), stat_id
         )
         return len(points)
+
+    async def async_sync_recent_from_stats(self, days: int = 14) -> None:
+        """et0_recent aus der EIGENEN Tagesstatistik zuruecklesen.
+
+        Die importierte Tagesstatistik ist die Wahrheit (und Quelle des
+        Diagramms). Beim Setup spiegeln wir die letzten Tage daraus in das
+        Attribut, damit die Dashboard-Tabelle sofort vollstaendig ist – auch
+        nach einem Upgrade, wo die einmalige Saat nicht erneut laeuft.
+        """
+        if "recorder" not in self.hass.config.components:
+            return
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+        except ImportError:
+            return
+        from homeassistant.helpers import entity_registry as er
+
+        stat_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{self.entry.entry_id}_et0_daily"
+        )
+        if not stat_id:
+            return
+        start = dt_util.start_of_local_day(
+            dt_util.start_of_local_day() - timedelta(days=max(1, int(days)))
+        )
+        end = dt_util.start_of_local_day() + timedelta(days=1)
+        try:
+            rows = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start,
+                end,
+                {stat_id},
+                "day",
+                None,
+                {"mean"},
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Iriy: recent-Sync fehlgeschlagen: %s", err)
+            return
+        for row in rows.get(stat_id, []):
+            ts = row.get("start")
+            mean = row.get("mean")
+            if ts is None or mean is None:
+                continue
+            if ts > 1e12:  # ms -> s
+                ts /= 1000.0
+            day = dt_util.as_local(dt_util.utc_from_timestamp(ts)).date()
+            self.et0_recent[day.isoformat()] = round(float(mean), 2)
+        for old in sorted(self.et0_recent)[:-14]:
+            del self.et0_recent[old]
+        # Frischen Snapshot mit gefuelltem Verlauf veroeffentlichen.
+        self.async_set_updated_data(self._snapshot())
+        await self._async_save()
 
     # --- Quell-Updates --------------------------------------------------
 
@@ -958,6 +1026,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             et0_today=round(self.et0_today, 2),
             et0_rate=self.et0_rate,
             zones={n: z for n, z in self.zones.items()},
+            et0_recent=dict(self.et0_recent),
             diagnostics={
                 "t_min": self._day["temp"].minimum,
                 "t_max": self._day["temp"].maximum,
@@ -1000,6 +1069,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
         # Langlebiger Zustand wird IMMER wiederhergestellt (ueberlebt Tageswechsel):
         self.et0_daily = data.get("et0_daily")
+        self.et0_recent = dict(data.get("et0_recent") or {})
         self._rain_last = data.get("rain_last")
         self._history_imported = bool(data.get("history_imported", False))
         self._last_finalized_day = data.get("last_finalized_day")
@@ -1043,6 +1113,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 "history_imported": self._history_imported,
                 "last_finalized_day": self._last_finalized_day,
                 "et0_daily": self.et0_daily,
+                "et0_recent": self.et0_recent,
                 "et0_today": self.et0_today,
                 "et0_rate": self.et0_rate,
                 "rain_last": self._rain_last,
