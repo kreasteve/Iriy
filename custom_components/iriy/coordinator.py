@@ -54,6 +54,7 @@ from .const import (
     CONF_WIND_UNIT,
     CONF_ZONE_AREA,
     CONF_ZONE_BY_AREA,
+    CONF_ZONE_CALC_LITERS,
     CONF_ZONE_EFFICIENCY,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
@@ -154,6 +155,7 @@ class ZoneState:
     max_deficit: float
     area: float = 0.0             # Flaeche [m2] – fuer die Liter-Steuergroesse
     by_area: bool = False         # True: nur Liter ueber Flaeche, KEINE Laufzeit
+    calc_liters: bool = False     # True: Menge RECHNEN (Modell) statt vom Ventil messen
     valve: str | None = None      # switch-Entity des Ventils (z2m), optional
     deficit: float = 0.0          # aktuelles Wasserdefizit [mm]
     etc_today: float = 0.0        # Pflanzenbedarf heute [mm]
@@ -326,6 +328,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 max_deficit=float(raw.get(CONF_ZONE_MAX_DEFICIT, DEFAULT_MAX_DEFICIT)),
                 area=float(raw.get(CONF_ZONE_AREA, 0.0) or 0.0),
                 by_area=bool(raw.get(CONF_ZONE_BY_AREA, False)),
+                calc_liters=bool(raw.get(CONF_ZONE_CALC_LITERS, False)),
                 valve=raw.get(CONF_ZONE_VALVE) or None,
                 deficit=existing.get(name, 0.0),
             )
@@ -1017,8 +1020,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         Zonen mit Flaeche (sonst keine L->mm-Umrechnung moeglich).
         """
         for zone in self.zones.values():
-            if not zone.valve:
-                continue
+            if not zone.valve or zone.calc_liters:
+                continue  # calc_liters: Menge wird gerechnet, nicht gemessen
             vol_eid = self._valve_volume_entity(zone.valve)
             if not vol_eid:
                 continue
@@ -1071,15 +1074,18 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             )
             return
 
-        if zone.area > 0:
+        eff = zone.efficiency if zone.efficiency > 0 else 1.0
+        applied_l: float | None = None  # ausgebrachte Brutto-Liter (gerechnet)
+        applied_mm: float | None = None  # Netto-mm an der Pflanze (gerechnet)
+        if zone.by_area:
+            # Liter-Steuerung -> quantitative (Menge in Litern).
             liters = amount if amount is not None else (zone.liters_needed or 0.0)
             if liters <= 0:
                 _LOGGER.info("Iriy: Zone %s hat kein Liter-Defizit", zone_name)
                 return
             if liters > _VALVE_MAX_LITERS:  # Sicherheits-Deckel (physisches Ventil)
                 _LOGGER.warning(
-                    "Iriy: Zone %s – Liter %.0f ueber Limit %.0f, gekappt. "
-                    "Flaeche/Konfig pruefen.",
+                    "Iriy: Zone %s – Liter %.0f ueber Limit %.0f, gekappt.",
                     zone_name,
                     liters,
                     _VALVE_MAX_LITERS,
@@ -1093,8 +1099,12 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                     "irrigation_interval": 0,
                 }
             }
-            # Defizit kommt selbstkorrigierend aus dem gemessenen Volumen.
+            applied_l = liters
+            if zone.area > 0:
+                applied_mm = (liters / zone.area) * eff
         else:
+            # Zeit-Steuerung -> timed (auch wenn eine Flaeche gesetzt ist, z. B.
+            # Tropfschlauch: gesteuert wird ueber die Laufzeit, nicht die Menge).
             minutes = amount if amount is not None else (zone.runtime_minutes or 0.0)
             if not minutes or minutes <= 0:
                 _LOGGER.info("Iriy: Zone %s hat kein Zeit-Defizit", zone_name)
@@ -1115,12 +1125,9 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                     "irrigation_interval": 0,
                 }
             }
-            # Zeit-Zone hat keine Flaeche -> Defizit nicht messbar herleitbar;
-            # um den kommandierten Betrag schaetzen.
-            eff = zone.efficiency if zone.efficiency > 0 else 1.0
-            zone.deficit = max(
-                zone.deficit - zone.throughput * (minutes / 60.0) * eff, 0.0
-            )
+            applied_mm = zone.throughput * (minutes / 60.0) * eff
+            if zone.area > 0:
+                applied_l = zone.throughput * (minutes / 60.0) * zone.area
 
         await self.hass.services.async_call(
             "mqtt",
@@ -1129,6 +1136,15 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             blocking=True,
         )
         _LOGGER.info("Iriy: Gieszen Zone %s -> %s %s", zone_name, topic, payload)
+        # Verbuchung: GERECHNET, wenn calc_liters gesetzt ist oder keine Messung
+        # moeglich (keine Flaeche, z. B. unzuverlaessiger Durchflussmesser am
+        # Tropfschlauch). Sonst kommt Defizit/gegossen aus dem gemessenen
+        # Ventil-Volumen (_read_valve_volumes).
+        if zone.calc_liters or zone.area <= 0:
+            if applied_mm:
+                zone.deficit = max(zone.deficit - applied_mm, 0.0)
+            if applied_l is not None:
+                zone.gegossen_l += applied_l
         await self._async_save()
         self.async_set_updated_data(self._snapshot())
 

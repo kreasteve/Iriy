@@ -252,6 +252,7 @@ class IriyPanel extends HTMLElement {
       efficiency: f.elements.efficiency.value,
       max_deficit: f.elements.max_deficit.value,
       by_area: byArea,
+      calc_liters: f.elements.calc_liters ? f.elements.calc_liters.checked : false,
       valve: f.elements.valve ? f.elements.valve.value : "",
     };
     if (!zone.name) {
@@ -323,6 +324,7 @@ class IriyPanel extends HTMLElement {
       efficiency: f.elements.efficiency.value,
       max_deficit: f.elements.max_deficit.value,
       by_area: f.elements.by_area ? f.elements.by_area.checked : false,
+      calc_liters: f.elements.calc_liters ? f.elements.calc_liters.checked : false,
       valve: f.elements.valve ? f.elements.valve.value : "",
     };
   }
@@ -609,6 +611,12 @@ class IriyPanel extends HTMLElement {
             byArea ? "checked" : ""
           } />
           <span>Nur über Fläche steuern (Liter statt Laufzeit) – bei undefiniertem/variablem Durchfluss</span>
+        </label>
+        <label class="check">
+          <input id="zone-calc-liters" name="calc_liters" type="checkbox" ${
+            z.calc_liters ? "checked" : ""
+          } />
+          <span>Liter berechnen (statt vom Ventil messen) – wenn der Durchflussmesser unzuverlässig ist (z. B. Tropfschlauch)</span>
         </label>
         <div class="grid">
           <label class="field">

@@ -43,6 +43,7 @@ CONF_ZONE_AREA = "area"               # m2 (optional, fuer spaetere Liter-Bilanz
 CONF_ZONE_MAX_DEFICIT = "max_deficit"  # mm, Kappung des Buckets (RAW)
 CONF_ZONE_EFFICIENCY = "efficiency"   # 0..1
 CONF_ZONE_BY_AREA = "by_area"         # True: nur Liter ueber Flaeche, KEINE Laufzeit
+CONF_ZONE_CALC_LITERS = "calc_liters"  # True: ausgebrachte Menge RECHNEN statt vom Ventil messen
 CONF_ZONE_VALVE = "valve"             # optional: switch-Entity des Ventils (z2m)
 
 # z2m-Ventilsteuerung (GiEX/Tuya cyclic irrigation)
