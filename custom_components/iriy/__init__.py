@@ -87,9 +87,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Aktuellen "gestern"-Wert setzen; ab hier fuehrt HA Verlauf + Statistik des
     # Sensors voellig selbst (kein laufender Import noetig).
     await coordinator.async_finalize_yesterday()
-    # Letzte Tage aus der eigenen Tagesstatistik in das Attribut spiegeln, damit
-    # die Dashboard-Tabelle sofort vollstaendig ist (auch nach Upgrade).
+    # Panel-Verlauf (et0_recent, eigener Tag) fuellen, damit die Tabelle sofort
+    # vollstaendig ist (auch nach Upgrade).
     await coordinator.async_sync_recent_from_stats()
+    # Optional: die letzten X Tage auch in die NATIVE Entitaets-Langzeitstatistik
+    # backfillen (gestern-datiert, idempotent). Ab heute zeichnet HA selbst auf.
+    if coordinator.import_history and coordinator.history_days > 0:
+        await coordinator.async_backfill_entity_stats(coordinator.history_days)
     return True
 
 

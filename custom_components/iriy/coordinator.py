@@ -540,6 +540,68 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         by_day = await self._et0_days_from_stats(start, today0)
         return await self._import_et0_points(by_day)
 
+    async def async_backfill_entity_stats(self, days: int) -> int:
+        """Backfill der ENTITAETS-Langzeitstatistik mit den letzten `days` Tagen.
+
+        GESTERN-datiert (Tag D = ET0 von D-1), passend zu HAs Vorwaerts-
+        Aufzeichnung des gehaltenen Zustands (state_class). Nur Vergangenheit
+        (Ziel < heute); ab heute zeichnet HA selbst auf. Idempotent – gleiche
+        Punkte ueberschreiben sich, kann also bei jedem Setup laufen.
+        """
+        if days <= 0 or "recorder" not in self.hass.config.components:
+            return 0
+        try:
+            from homeassistant.components.recorder.statistics import (
+                async_import_statistics,
+            )
+            from homeassistant.helpers import entity_registry as er
+        except ImportError:
+            return 0
+        try:
+            from homeassistant.components.recorder.models import StatisticMeanType
+
+            mean_meta: dict = {"mean_type": StatisticMeanType.ARITHMETIC}
+        except ImportError:
+            mean_meta = {"has_mean": True}
+
+        stat_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{self.entry.entry_id}_et0_daily"
+        )
+        if not stat_id:
+            return 0
+        today0 = dt_util.start_of_local_day()
+        today = today0.date()
+        start = dt_util.start_of_local_day(today0 - timedelta(days=int(days) + 1))
+        by_day = await self._et0_days_from_stats(start, today0)
+        points = [
+            {
+                # Gestern-Datierung: Tag D = ET0 von D-1 (Quelltag d -> Ziel d+1).
+                "start": dt_util.start_of_local_day(d + timedelta(days=1)),
+                "min": v,
+                "max": v,
+                "mean": v,
+            }
+            for d, v in sorted(by_day.items())
+            if (d + timedelta(days=1)) < today  # nur Vergangenheit; heute macht HA
+        ]
+        if not points:
+            return 0
+        metadata = {
+            **mean_meta,
+            "has_sum": False,
+            "name": None,
+            "source": "recorder",
+            "statistic_id": stat_id,
+            "unit_class": None,
+            "unit_of_measurement": "mm",
+        }
+        async_import_statistics(self.hass, metadata, points)
+        _LOGGER.info(
+            "Iriy: %d Tage in die Entitaets-Statistik backfilled (gestern-datiert)",
+            len(points),
+        )
+        return len(points)
+
     async def _et0_days_from_stats(
         self, start_local: datetime, end_local: datetime
     ) -> dict:
