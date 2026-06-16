@@ -1253,6 +1253,80 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         await self._async_save()
         self.async_set_updated_data(self._snapshot())
 
+    async def async_backfill_rain_history(self, days: int = 10) -> None:
+        """Rueckwirkend den Tagesregen (mm) je Tag in die Tabelle holen und danach
+        die Defizit-Historie rekonstruieren. Regen aus dem konfigurierten Sensor:
+        cumulative_daily -> Tagesmaximum; incremental -> Summe; rate -> uebersprungen.
+        """
+        rain_eid = self._src.get(CONF_RAIN)
+        if rain_eid and self._rain_mode in ("cumulative_daily", "incremental"):
+            try:
+                from homeassistant.components.recorder import get_instance, history
+            except ImportError:
+                history = None
+            if history is not None:
+                today0 = dt_util.start_of_local_day()
+                for i in range(1, max(1, int(days)) + 1):
+                    d_start = dt_util.start_of_local_day(today0 - timedelta(days=i))
+                    d_end = dt_util.start_of_local_day(today0 - timedelta(days=i - 1))
+                    iso = d_start.date().isoformat()
+                    try:
+                        data = await get_instance(self.hass).async_add_executor_job(
+                            history.state_changes_during_period,
+                            self.hass,
+                            d_start,
+                            d_end,
+                            rain_eid,
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+                    vals = []
+                    for s in data.get(rain_eid, []):
+                        if s.last_changed < d_start:
+                            continue
+                        try:
+                            vals.append(float(s.state))
+                        except (ValueError, TypeError):
+                            continue
+                    if not vals:
+                        continue
+                    day_rain = max(vals) if self._rain_mode == "cumulative_daily" else sum(vals)
+                    self.rain_recent[iso] = round(day_rain, 2)
+        self._reconstruct_deficit_history(days)
+        self._trim_recent()
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+
+    def _reconstruct_deficit_history(self, days: int = 10) -> None:
+        """Defizit-Historie je Zone simulieren (Naeherung): von alt nach neu
+        Defizit(D) = clamp(Defizit(D-1) + ET0(D)*Kc - Regen(D) - gegossen_mm(D),
+        0, max_deficit). Startwert am Fensteranfang = 0. Bereits gespeicherte
+        (echte) Tages-Defizite bleiben erhalten und dienen als Basis.
+        """
+        today0 = dt_util.start_of_local_day()
+        dates = [
+            (today0 - timedelta(days=i)).date().isoformat()
+            for i in range(int(days), 0, -1)  # alt -> neu
+        ]
+        for zone in self.zones.values():
+            eff = zone.efficiency if zone.efficiency > 0 else 1.0
+            deficit = 0.0
+            zlog = self.zone_recent.setdefault(zone.name, {})
+            for iso in dates:
+                rec = zlog.setdefault(iso, {})
+                if rec.get("deficit") is not None:
+                    deficit = float(rec["deficit"])  # echter Wert -> Basis
+                    continue
+                et0 = float(self.et0_recent.get(iso, 0.0) or 0.0)
+                rain = float(self.rain_recent.get(iso, 0.0) or 0.0)
+                watered_l = float(rec.get("gegossen_l", 0.0) or 0.0)
+                watered_mm = (watered_l / zone.area) * eff if zone.area > 0 else 0.0
+                deficit = min(
+                    max(deficit + et0 * zone.kc - rain - watered_mm, 0.0),
+                    zone.max_deficit,
+                )
+                rec["deficit"] = round(deficit, 2)
+
     def _apply_to_zones(self, et0_mm: float, rain_mm: float) -> None:
         for zone in self.zones.values():
             etc = et0_mm * zone.kc

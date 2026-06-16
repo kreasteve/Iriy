@@ -97,6 +97,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Zonen-Tagesmengen rueckwirkend aus den Ventil-Daten in die Tabelle holen
     # (erfasst auch manuelles Gieszen; ~10 Tage, soweit die Ventil-Historie reicht).
     await coordinator.async_backfill_zone_history(10)
+    # Tagesregen rueckwirkend holen + Defizit-Historie rekonstruieren (Naeherung).
+    await coordinator.async_backfill_rain_history(10)
     return True
 
 
