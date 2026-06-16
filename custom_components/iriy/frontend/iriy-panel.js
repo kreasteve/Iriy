@@ -188,17 +188,31 @@ class IriyPanel extends HTMLElement {
   async _irrigate(name) {
     const inst = this._instance();
     const z = (inst.zones || []).find((x) => x.name === name);
-    const target = z
-      ? z.area > 0
-        ? `${NUM(z.liters_needed, 0)} L`
-        : `${NUM(z.runtime_minutes, 0)} min`
-      : "";
-    if (!confirm(`Zone „${name}" jetzt gießen (${target})?\nDas öffnet das Ventil.`))
+    if (!z) return;
+    const isArea = z.area > 0;
+    const unit = isArea ? "L" : "min";
+    let amount = isArea ? z.liters_needed : z.runtime_minutes;
+    const data = { zone: name };
+    if (!amount || amount <= 0) {
+      // Kein Defizit -> Testmenge abfragen (sonst gäbe es nichts zu gießen).
+      const inp = prompt(
+        `Zone „${name}" hat aktuell kein Defizit.\nTestmenge in ${unit} eingeben (leer = abbrechen):`
+      );
+      if (!inp) return;
+      amount = parseFloat(String(inp).replace(",", "."));
+      if (!(amount > 0)) return;
+      data.amount = amount;
+    } else if (
+      !confirm(
+        `Zone „${name}" jetzt gießen (${NUM(amount, 0)} ${unit})?\nDas öffnet das Ventil.`
+      )
+    ) {
       return;
+    }
     this._busy = true;
     this._render();
     try {
-      await this._hass.callService("iriy", "irrigate_zone", { zone: name });
+      await this._hass.callService("iriy", "irrigate_zone", data);
       await this._afterMutation();
     } catch (e) {
       this._error = "Gießen fehlgeschlagen: " + (e.message || e.code || e);
@@ -392,12 +406,7 @@ class IriyPanel extends HTMLElement {
       </div>`;
   }
 
-  // --- Umrechnungs-Helfer für die Tabelle -----------------------------
-  _hhmm(min) {
-    min = Math.round(min || 0);
-    if (min < 60) return min + " min";
-    return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")} h`;
-  }
+  // --- Umrechnung (Zahlen ohne Einheit – Einheiten stehen im Kopf) -----
   _litersFromMm(z, mm) {
     const eff = z.efficiency > 0 ? z.efficiency : 1;
     return (mm * (z.area || 0)) / eff;
@@ -406,26 +415,29 @@ class IriyPanel extends HTMLElement {
     const eff = z.efficiency > 0 ? z.efficiency : 1;
     return z.throughput > 0 ? (mm / (z.throughput * eff)) * 60 : 0;
   }
-  // Defizit-Zelle: Flächen-Zone -> Liter, Zeit-Zone -> hh:mm.
-  _deficitLive(z) {
-    if (z.area > 0) return z.liters_needed != null ? NUM(z.liters_needed, 0) + " L" : "–";
-    return z.runtime_minutes != null ? this._hhmm(z.runtime_minutes) : "–";
+  _deficitUnit(z) {
+    return z.area > 0 ? "L" : "min";
   }
-  _deficitFromMm(z, mm) {
-    if (mm == null) return "–";
-    if (z.area > 0) return NUM(this._litersFromMm(z, mm), 0) + " L";
-    return this._hhmm(this._minutesFromMm(z, mm));
+  _wateredUnit() {
+    return this._wunit === "mm" ? "mm" : this._wunit === "L" ? "L" : "min";
   }
-  // Gegossen-Zelle (gemessene Liter), Anzeige je nach mm/L/T-Umschalter.
-  _watered(z, liters) {
-    if (liters == null) return "–";
-    if (this._wunit === "L") return NUM(liters, 1) + " L";
+  // Defizit als Zahl: Flächen-Zone -> Liter, Zeit-Zone -> Minuten. mm==null -> live.
+  _deficitNum(z, mm) {
+    if (z.area > 0) return mm == null ? z.liters_needed : this._litersFromMm(z, mm);
+    return mm == null ? z.runtime_minutes : this._minutesFromMm(z, mm);
+  }
+  // Gegossen als Zahl je nach Umschalter (aus gemessenen Litern).
+  _wateredNum(z, liters) {
+    if (liters == null) return null;
+    if (this._wunit === "L") return liters;
     if (z.area > 0) {
       const mm = liters / z.area;
-      if (this._wunit === "mm") return NUM(mm, 1) + " mm";
-      return this._hhmm(this._minutesFromMm(z, mm)); // "T"
+      return this._wunit === "mm" ? mm : this._minutesFromMm(z, mm);
     }
-    return "–"; // ohne Fläche nicht in mm/T umrechenbar
+    return null; // ohne Fläche nicht in mm/T umrechenbar
+  }
+  _cell(num, dec) {
+    return `<td class="r">${num == null || isNaN(num) ? "–" : NUM(num, dec)}</td>`;
   }
 
   _table(inst) {
@@ -434,47 +446,55 @@ class IriyPanel extends HTMLElement {
     const rain = inst.rain_recent || {};
     const zhist = inst.zone_history || {};
     const U = this._wunit;
+    const wdec = U === "T" ? 0 : 1; // Minuten ganzzahlig, mm/L mit 1 Nachkomma
 
-    const zoneHeads = zones
-      .map(
-        (z) =>
-          `<th class="r">${ESC(z.name)} Defizit</th><th class="r">${ESC(
-            z.name
-          )} Gegossen</th>`
-      )
-      .join("");
     const chip = (u, lbl) =>
       `<button class="chip${U === u ? " on" : ""}" data-action="wunit" data-unit="${u}">${lbl}</button>`;
-    const row = (label, et0, rainMm, cells) => `<tr>
-        <td>${label}</td>
-        <td class="r">${et0 != null ? NUM(et0) : "–"}</td>
-        <td class="r">${rainMm != null ? NUM(rainMm, 1) : "–"}</td>
-        ${cells}
-      </tr>`;
+
+    // 3-zeiliger, kompakter Kopf: Name / Defizit·Gegossen / Einheiten.
+    const head1 = zones.map((z) => `<th colspan="2">${ESC(z.name)}</th>`).join("");
+    const head2 = zones
+      .map(() => `<th class="r">Defizit</th><th class="r">Gegossen</th>`)
+      .join("");
+    const head3 = zones
+      .map(
+        (z) =>
+          `<th class="r u">${this._deficitUnit(z)}</th><th class="r u">${this._wateredUnit()}</th>`
+      )
+      .join("");
+    const thead = `<thead>
+      <tr><th rowspan="3">Tag</th><th rowspan="2" class="r">ET0</th><th rowspan="2" class="r">Regen</th>${head1}</tr>
+      <tr>${head2}</tr>
+      <tr><th class="r u">mm</th><th class="r u">mm</th>${head3}</tr>
+    </thead>`;
+
+    const zoneCells = (defMm, getL, isLive) =>
+      zones
+        .map((z) => {
+          const def = isLive ? this._deficitNum(z, null) : this._deficitNum(z, defMm(z));
+          const liters = getL(z);
+          return this._cell(def, 0) + this._cell(this._wateredNum(z, liters), wdec);
+        })
+        .join("");
+
+    const row = (label, et0, rainMm, cells) =>
+      `<tr><td>${label}</td>${this._cell(et0, 2)}${this._cell(rainMm, 1)}${cells}</tr>`;
 
     const rows = [
       row(
         "heute",
         inst.et0_today,
         inst.rain_today,
-        zones
-          .map(
-            (z) =>
-              `<td class="r">${this._deficitLive(z)}</td><td class="r">${this._watered(
-                z,
-                z.gegossen_l
-              )}</td>`
-          )
-          .join("")
+        zoneCells(null, (z) => z.gegossen_l, true)
       ),
     ];
     for (const d of days) {
       const cells = zones
         .map((z) => {
           const h = (zhist[z.name] || {})[d.date];
-          return `<td class="r">${
-            h ? this._deficitFromMm(z, h.deficit) : "–"
-          }</td><td class="r">${h ? this._watered(z, h.gegossen_l) : "–"}</td>`;
+          const def = h ? this._deficitNum(z, h.deficit) : null;
+          const liters = h ? h.gegossen_l : null;
+          return this._cell(def, 0) + this._cell(this._wateredNum(z, liters), wdec);
         })
         .join("");
       rows.push(row(this._dayLabel(d.date), d.mm, rain[d.date], cells));
@@ -490,10 +510,7 @@ class IriyPanel extends HTMLElement {
     )}</div>
         </div>
         <div class="tablewrap">
-          <table>
-            <thead><tr><th>Tag</th><th class="r">ET0</th><th class="r">Regen</th>${zoneHeads}</tr></thead>
-            <tbody>${rows.join("")}</tbody>
-          </table>
+          <table class="grid3">${thead}<tbody>${rows.join("")}</tbody></table>
         </div>
       </div>`;
   }
@@ -668,6 +685,9 @@ IriyPanel.styles = `
   table { width:100%; border-collapse: collapse; white-space: nowrap; }
   th, td { padding: 6px 8px; border-bottom: 1px solid var(--divider-color, #e0e0e0); font-size:.9rem; }
   th { text-align:left; color: var(--secondary-text-color); font-weight:500; }
+  thead th { vertical-align: bottom; }
+  .grid3 thead tr:first-child th[colspan] { text-align:center; border-bottom: 1px solid var(--divider-color,#e0e0e0); }
+  .grid3 th.u { font-weight: 400; font-size: .72rem; padding-top: 0; }
   .r { text-align:right; }
   .zone { display:flex; align-items:center; justify-content:space-between; gap:8px;
           padding: 10px 0; border-bottom: 1px solid var(--divider-color, #e0e0e0); }

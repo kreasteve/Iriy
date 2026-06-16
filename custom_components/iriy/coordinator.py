@@ -1059,15 +1059,16 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 continue
             base = self._valve_base.get(zone.name)
             self._valve_base[zone.name] = cur
+            # Anzeige "heute gegossen" = Tages-Maximum des Geraete-Zaehlers
+            # (monoton steigend bis zum taeglichen Reset) -> zeigt das echte
+            # Tagesvolumen und ist robust gegen Reset-/Snapshot-Timing.
+            zone.gegossen_l = max(zone.gegossen_l, cur)
             if base is None:
                 continue
             # Sensor-Tagesreset abfangen (faellt cur unter base -> neuer Tag).
             delta = cur - base if cur >= base else cur
             if delta <= 0:
                 continue
-            # Heute ausgebracht delta-akkumuliert -> robust gegen den taeglichen
-            # Sensor-Reset und gegen Tick-/Reset-Timing.
-            zone.gegossen_l += delta
             # Defizit selbstkorrigierend: ausgebrachte BRUTTO-Liter -> NETTO-mm
             # an der Pflanze (x Wirkungsgrad), dann abziehen. Konsistent zu
             # liters_needed = Defizit*Flaeche/Wirkungsgrad. Nur mit Flaeche
