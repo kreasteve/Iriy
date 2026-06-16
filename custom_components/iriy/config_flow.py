@@ -24,6 +24,8 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AUTO_HOUR,
+    CONF_AUTO_IRRIGATE,
     CONF_ELEVATION,
     CONF_HISTORY_DAYS,
     CONF_HOURLY,
@@ -35,25 +37,35 @@ from .const import (
     CONF_PRESSURE_UNIT,
     CONF_RAIN,
     CONF_RAIN_MODE,
+    CONF_RAIN_SKIP_MM,
     CONF_SOLAR,
     CONF_TEMP,
     CONF_UPDATE_MINUTES,
+    CONF_WEATHER_ENTITY,
     CONF_WIND,
     CONF_WIND_HEIGHT,
     CONF_WIND_UNIT,
     CONF_ZONE_EFFICIENCY,
+    CONF_ZONE_INTERVAL_DAYS,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
+    CONF_ZONE_TRIGGER,
+    CONF_ZONE_TRIGGER_UNIT,
     CONF_ZONES,
+    DEFAULT_AUTO_HOUR,
+    DEFAULT_AUTO_IRRIGATE,
     DEFAULT_BACKFILL_DAYS,
     DEFAULT_EFFICIENCY,
     DEFAULT_HOURLY,
     DEFAULT_IMPORT_HISTORY,
+    DEFAULT_INTERVAL_DAYS,
     DEFAULT_MAX_DEFICIT,
     DEFAULT_PRESSURE_UNIT,
     DEFAULT_RAIN_MODE,
+    DEFAULT_RAIN_SKIP_MM,
+    DEFAULT_TRIGGER_UNIT,
     DEFAULT_THROUGHPUT,
     DEFAULT_UPDATE_MINUTES,
     DEFAULT_WIND_HEIGHT,
@@ -63,6 +75,7 @@ from .const import (
 )
 
 _SENSOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
+_WEATHER = selector.EntitySelector(selector.EntitySelectorConfig(domain="weather"))
 
 
 def _num(minimum: float, maximum: float, step: float | str, unit: str | None = None):
@@ -144,6 +157,19 @@ def _settings_schema(defaults: dict) -> vol.Schema:
                 CONF_HISTORY_DAYS,
                 default=defaults.get(CONF_HISTORY_DAYS, DEFAULT_BACKFILL_DAYS),
             ): _num(0, 365, 1, "Tage"),
+            # --- Automatik (autonomes Giessen) ---
+            vol.Required(
+                CONF_AUTO_IRRIGATE,
+                default=defaults.get(CONF_AUTO_IRRIGATE, DEFAULT_AUTO_IRRIGATE),
+            ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_AUTO_HOUR, default=defaults.get(CONF_AUTO_HOUR, DEFAULT_AUTO_HOUR)
+            ): _num(0, 23, 1, "Uhr"),
+            vol.Required(
+                CONF_RAIN_SKIP_MM,
+                default=defaults.get(CONF_RAIN_SKIP_MM, DEFAULT_RAIN_SKIP_MM),
+            ): _num(0, 50, 0.5, "mm"),
+            vol.Optional(CONF_WEATHER_ENTITY): _WEATHER,
         }
     )
 
@@ -175,6 +201,24 @@ def _zone_schema(defaults: dict, with_name: bool = True) -> vol.Schema:
             default=defaults.get(CONF_ZONE_MAX_DEFICIT, DEFAULT_MAX_DEFICIT),
         )
     ] = _num(1, 100, 1, "mm")
+    # --- Automatik je Zone ---
+    fields[
+        vol.Required(
+            CONF_ZONE_INTERVAL_DAYS,
+            default=defaults.get(CONF_ZONE_INTERVAL_DAYS, DEFAULT_INTERVAL_DAYS),
+        )
+    ] = _num(0, 30, 1, "Tage")
+    fields[
+        vol.Optional(
+            CONF_ZONE_TRIGGER, default=defaults.get(CONF_ZONE_TRIGGER, 0)
+        )
+    ] = _num(0, 1000, 0.5)
+    fields[
+        vol.Required(
+            CONF_ZONE_TRIGGER_UNIT,
+            default=defaults.get(CONF_ZONE_TRIGGER_UNIT, DEFAULT_TRIGGER_UNIT),
+        )
+    ] = _select(["mm", "L"], "trigger_unit")
     return vol.Schema(fields)
 
 

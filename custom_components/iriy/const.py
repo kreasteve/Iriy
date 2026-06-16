@@ -45,6 +45,15 @@ CONF_ZONE_EFFICIENCY = "efficiency"   # 0..1
 CONF_ZONE_BY_AREA = "by_area"         # True: nur Liter ueber Flaeche, KEINE Laufzeit
 CONF_ZONE_CALC_LITERS = "calc_liters"  # True: ausgebrachte Menge RECHNEN statt vom Ventil messen
 CONF_ZONE_VALVE = "valve"             # optional: switch-Entity des Ventils (z2m)
+CONF_ZONE_INTERVAL_DAYS = "interval_days"  # spaetestens alle N Tage giessen
+CONF_ZONE_TRIGGER = "trigger"         # Gieß-Schwelle (Wert), Einheit s. trigger_unit
+CONF_ZONE_TRIGGER_UNIT = "trigger_unit"  # "mm" | "L" – Eingabe-Einheit der Schwelle
+
+# Automatik (autonomes Giessen)
+CONF_AUTO_IRRIGATE = "auto_irrigate"  # Automatik an/aus (Default AUS – Sicherheit)
+CONF_AUTO_HOUR = "auto_hour"          # Uhrzeit (Stunde 0-23), zu der entschieden wird
+CONF_RAIN_SKIP_MM = "rain_skip_mm"    # Forecast-Regen >= mm -> um einen Tag verschieben
+CONF_WEATHER_ENTITY = "weather_entity"  # weather.* fuer die Tages-Vorhersage
 
 # z2m-Ventilsteuerung (GiEX/Tuya cyclic irrigation)
 DEFAULT_Z2M_BASE_TOPIC = "zigbee2mqtt"
@@ -69,6 +78,17 @@ DEFAULT_IMPORT_HISTORY = True
 DEFAULT_THROUGHPUT = 20.0   # mm/h Tropfschlauch
 DEFAULT_MAX_DEFICIT = 30.0  # mm bis "Welkepunkt"
 DEFAULT_EFFICIENCY = 0.9
+
+# Automatik-Defaults (bewusst konservativ: AUS, nachts, mit Regen-Sperre)
+DEFAULT_AUTO_IRRIGATE = False
+DEFAULT_AUTO_HOUR = 4           # 04:00 Uhr
+DEFAULT_RAIN_SKIP_MM = 3.0      # ab 3 mm Vorhersage einen Tag warten
+DEFAULT_INTERVAL_DAYS = 3       # spaetestens alle 3 Tage giessen
+DEFAULT_TRIGGER_UNIT = "mm"
+# Wenn keine Gieß-Schwelle gesetzt ist: bei diesem Anteil vom Max-Defizit giessen.
+DEFAULT_TRIGGER_FRACTION = 0.667
+# Bagatell-Grenze: Tagesmengen unter diesem mm-Defizit lohnen kein Giessen.
+AUTO_MIN_DEFICIT_MM = 1.0
 
 # Storage
 STORAGE_VERSION = 1

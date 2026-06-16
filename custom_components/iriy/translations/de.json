@@ -21,7 +21,11 @@
           "hourly": "Stündliche Live-Berechnung",
           "update_minutes": "Aktualisierungsintervall (min)",
           "import_history": "Historische Daten importieren",
-          "history_days": "Tage rückwirkend"
+          "history_days": "Tage rückwirkend",
+          "auto_irrigate": "Automatik (autonom gießen)",
+          "auto_hour": "Uhrzeit Automatik (Stunde)",
+          "rain_skip_mm": "Regen-Sperre ab (mm Vorhersage)",
+          "weather_entity": "Wetter-Entität für Vorhersage (optional)"
         },
         "data_description": {
           "temperature": "Aktuelle Außentemperatur – ein Momentanwert, KEIN Tages-Min/Max-Sensor.",
@@ -31,7 +35,11 @@
           "pressure": "Absoluter Luftdruck (Stationsdruck) – NICHT der relative/Meereshöhen-Wert.",
           "rain": "Regenmenge. Für den Modus 'Zähler (Reset täglich)' einen Tages-Regenzähler wählen.",
           "import_history": "Beim Einrichten die letzten X Tage als ET0-Verlauf aus dem Recorder vorbefüllen (so weit Daten vorhanden). Läuft NUR einmal beim Einrichten; danach führt Home Assistant den Verlauf selbst.",
-          "history_days": "Wie viele vergangene Tage importieren (0 = keine)."
+          "history_days": "Wie viele vergangene Tage importieren (0 = keine).",
+          "auto_irrigate": "Wenn aktiv, entscheidet Iriy täglich selbst je Zone übers Gießen (nur Zonen mit Ventil).",
+          "auto_hour": "Stunde, zu der entschieden wird (z. B. 4 = 04:00 Uhr).",
+          "rain_skip_mm": "Ist für heute mind. so viel Regen vorhergesagt, wird um einen Tag verschoben.",
+          "weather_entity": "Liefert die Tages-Regenvorhersage. Leer = erste gefundene Wetter-Entität."
         }
       }
     }
@@ -66,7 +74,11 @@
           "hourly": "Stündliche Live-Berechnung",
           "update_minutes": "Aktualisierungsintervall (min)",
           "import_history": "Historische Daten importieren",
-          "history_days": "Tage rückwirkend"
+          "history_days": "Tage rückwirkend",
+          "auto_irrigate": "Automatik (autonom gießen)",
+          "auto_hour": "Uhrzeit Automatik (Stunde)",
+          "rain_skip_mm": "Regen-Sperre ab (mm Vorhersage)",
+          "weather_entity": "Wetter-Entität für Vorhersage (optional)"
         },
         "data_description": {
           "temperature": "Aktuelle Außentemperatur – ein Momentanwert, KEIN Tages-Min/Max-Sensor.",
@@ -76,7 +88,11 @@
           "pressure": "Absoluter Luftdruck (Stationsdruck) – NICHT der relative/Meereshöhen-Wert.",
           "rain": "Regenmenge. Für den Modus 'Zähler (Reset täglich)' einen Tages-Regenzähler wählen.",
           "import_history": "Nur relevant beim ersten Einrichten: die letzten X Tage einmalig vorbefüllen. Danach führt Home Assistant den Verlauf selbst.",
-          "history_days": "Wie viele vergangene Tage importieren (0 = keine)."
+          "history_days": "Wie viele vergangene Tage importieren (0 = keine).",
+          "auto_irrigate": "Wenn aktiv, entscheidet Iriy täglich selbst je Zone übers Gießen (nur Zonen mit Ventil).",
+          "auto_hour": "Stunde, zu der entschieden wird (z. B. 4 = 04:00 Uhr).",
+          "rain_skip_mm": "Ist für heute mind. so viel Regen vorhergesagt, wird um einen Tag verschoben.",
+          "weather_entity": "Liefert die Tages-Regenvorhersage. Leer = erste gefundene Wetter-Entität."
         }
       },
       "add_zone": {
@@ -86,7 +102,10 @@
           "kc": "Pflanzen-Koeffizient Kc",
           "throughput": "Niederschlagsrate (mm/h)",
           "efficiency": "Bewässerungs-Wirkungsgrad (0–1)",
-          "max_deficit": "Maximales Defizit (mm)"
+          "max_deficit": "Maximales Defizit (mm)",
+          "interval_days": "Spätestens alle … Tage gießen",
+          "trigger": "Gieß-Schwelle (0 = ⅔ Max-Defizit)",
+          "trigger_unit": "Einheit der Gieß-Schwelle"
         }
       },
       "edit_zone": {
@@ -99,7 +118,10 @@
           "kc": "Pflanzen-Koeffizient Kc",
           "throughput": "Niederschlagsrate (mm/h)",
           "efficiency": "Bewässerungs-Wirkungsgrad (0–1)",
-          "max_deficit": "Maximales Defizit (mm)"
+          "max_deficit": "Maximales Defizit (mm)",
+          "interval_days": "Spätestens alle … Tage gießen",
+          "trigger": "Gieß-Schwelle (0 = ⅔ Max-Defizit)",
+          "trigger_unit": "Einheit der Gieß-Schwelle"
         }
       },
       "remove_zone": {
@@ -149,6 +171,12 @@
         "cumulative_daily": "Zähler (Reset täglich)",
         "incremental": "Inkrementell (mm je Meldung)",
         "rate": "Rate (mm/h)"
+      }
+    },
+    "trigger_unit": {
+      "options": {
+        "mm": "mm (Defizit)",
+        "L": "L (über Fläche)"
       }
     }
   }

@@ -254,6 +254,9 @@ class IriyPanel extends HTMLElement {
       by_area: byArea,
       calc_liters: f.elements.calc_liters ? f.elements.calc_liters.checked : false,
       valve: f.elements.valve ? f.elements.valve.value : "",
+      interval_days: f.elements.interval_days ? f.elements.interval_days.value : "",
+      trigger: f.elements.trigger ? f.elements.trigger.value : "",
+      trigger_unit: f.elements.trigger_unit ? f.elements.trigger_unit.value : "mm",
     };
     if (!zone.name) {
       this._error = "Bitte einen Zonennamen angeben.";
@@ -326,6 +329,9 @@ class IriyPanel extends HTMLElement {
       by_area: f.elements.by_area ? f.elements.by_area.checked : false,
       calc_liters: f.elements.calc_liters ? f.elements.calc_liters.checked : false,
       valve: f.elements.valve ? f.elements.valve.value : "",
+      interval_days: f.elements.interval_days ? f.elements.interval_days.value : "",
+      trigger: f.elements.trigger ? f.elements.trigger.value : "",
+      trigger_unit: f.elements.trigger_unit ? f.elements.trigger_unit.value : "mm",
     };
   }
 
@@ -370,7 +376,20 @@ class IriyPanel extends HTMLElement {
           Solar ${NUM(d.solar_mean_wm2, 0)} W/m² ·
           Regen ${NUM(d.rain_today_mm, 1)} mm
         </div>
+        ${this._autoLine(inst.auto)}
       </div>`;
+  }
+
+  _autoLine(auto) {
+    if (!auto) return "";
+    if (!auto.enabled)
+      return `<div class="auto off">⏸ Automatik aus – gießt nur manuell (in den Einstellungen aktivierbar)</div>`;
+    const hh = String(auto.hour).padStart(2, "0");
+    const w = auto.weather_entity ? ` · Forecast: ${ESC(auto.weather_entity)}` : "";
+    return `<div class="auto on">✅ Automatik aktiv – täglich ${hh}:00 Uhr · Regen-Sperre ab ${NUM(
+      auto.rain_skip_mm,
+      1
+    )} mm${w}</div>`;
   }
 
   _dayShort(dateStr) {
@@ -560,33 +579,40 @@ class IriyPanel extends HTMLElement {
       <tr><th class="r u">mm</th><th class="r u">mm</th>${head3}</tr>
     </thead>`;
 
-    const zoneCells = (defMm, getL, isLive) =>
-      zones
-        .map((z) => {
-          const def = isLive ? this._deficitNum(z, null) : this._deficitNum(z, defMm(z));
-          const liters = getL(z);
-          return this._cell(def, 1) + this._cell(this._wateredNum(z, liters), wdec);
-        })
-        .join("");
+    // Gegossen-Zelle: "→FC rain", wenn die Automatik wegen Regenvorhersage
+    // verschoben hat (und an dem Tag nicht doch gegossen wurde).
+    const watCell = (z, liters, rec) => {
+      if (rec && rec.note === "fc_rain" && !(liters > 0)) {
+        const mm = rec.fc_rain_mm != null ? `${rec.fc_rain_mm} mm` : "Regen";
+        return `<td class="r fc" title="Verschoben – ${mm} Regen vorhergesagt">→FC rain</td>`;
+      }
+      return this._cell(this._wateredNum(z, liters), wdec);
+    };
+
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}-${String(now.getDate()).padStart(2, "0")}`;
 
     const row = (label, et0, rainMm, cells) =>
       `<tr><td>${label}</td>${this._cell(et0, 2)}${this._cell(rainMm, 1)}${cells}</tr>`;
 
-    const rows = [
-      row(
-        "heute",
-        inst.et0_today,
-        inst.rain_today,
-        zoneCells(null, (z) => z.gegossen_l, true)
-      ),
-    ];
+    const liveCells = zones
+      .map((z) => {
+        const rec = (zhist[z.name] || {})[todayIso];
+        return this._cell(this._deficitNum(z, null), 1) + watCell(z, z.gegossen_l, rec);
+      })
+      .join("");
+
+    const rows = [row("heute", inst.et0_today, inst.rain_today, liveCells)];
     for (const d of days) {
       const cells = zones
         .map((z) => {
           const h = (zhist[z.name] || {})[d.date];
           const def = h ? this._deficitNum(z, h.deficit) : null;
           const liters = h ? h.gegossen_l : null;
-          return this._cell(def, 1) + this._cell(this._wateredNum(z, liters), wdec);
+          return this._cell(def, 1) + watCell(z, liters, h);
         })
         .join("");
       rows.push(row(this._dayLabel(d.date), d.mm, rain[d.date], cells));
@@ -740,6 +766,34 @@ class IriyPanel extends HTMLElement {
             <small class="muted">z2m-Switch des Ventils – für „Jetzt gießen" + gegossene Liter</small>
           </label>
         </div>
+        <h3>Automatik (gießt nur bei Ventil &amp; aktivierter Automatik)</h3>
+        <div class="grid">
+          <label class="field">
+            <span>Gieß-Schwelle</span>
+            <input id="trigger" name="trigger" type="number" step="0.5" min="0" value="${
+              z.trigger ?? ""
+            }" placeholder="⅔ Max-Defizit" />
+            <small class="muted">ab diesem Defizit gießen (leer = ⅔ vom Max-Defizit)</small>
+          </label>
+          <label class="field">
+            <span>Einheit der Schwelle</span>
+            <select id="trigger_unit" name="trigger_unit">
+              <option value="mm" ${
+                (z.trigger_unit || "mm") === "mm" ? "selected" : ""
+              }>mm (Defizit)</option>
+              <option value="L" ${
+                z.trigger_unit === "L" ? "selected" : ""
+              }>L (über Fläche)</option>
+            </select>
+          </label>
+          ${field(
+            "interval_days",
+            "Spätestens alle … Tage",
+            "type=number step=1 min=0",
+            z.interval_days ?? 3,
+            "0 = nur nach Schwelle; sonst zusätzlich nach Intervall"
+          )}
+        </div>
         <div class="formact">
           <button type="button" class="ghost" data-action="cancel-zone">Abbrechen</button>
           <button type="submit" class="primary" ${this._busy ? "disabled" : ""}>${
@@ -768,6 +822,10 @@ IriyPanel.styles = `
   .stat .val { font-size: 1.7rem; font-weight: 500; }
   .stat .val small { font-size: .9rem; color: var(--secondary-text-color); }
   .diag { margin-top: 10px; line-height: 1.5; }
+  .auto { margin-top: 8px; font-size: .82rem; padding: 6px 10px; border-radius: 8px; }
+  .auto.on { background: rgba(76,175,80,.12); color: var(--primary-text-color); }
+  .auto.off { background: var(--secondary-background-color, #f1f1f1); color: var(--secondary-text-color); }
+  td.fc { color: #48c9b0; font-size: .76rem; white-space: nowrap; }
   .chart2 { width:100%; height:auto; display:block; }
   .chart2 .grid { stroke: var(--divider-color, #e0e0e0); stroke-width: 0.4; }
   .chart2 .yl { font-size: 7px; fill: var(--secondary-text-color); text-anchor: end; }

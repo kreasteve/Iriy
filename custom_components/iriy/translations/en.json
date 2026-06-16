@@ -21,7 +21,11 @@
           "hourly": "Hourly live calculation",
           "update_minutes": "Update interval (min)",
           "import_history": "Import historical data",
-          "history_days": "Days back"
+          "history_days": "Days back",
+          "auto_irrigate": "Automation (water autonomously)",
+          "auto_hour": "Automation time (hour)",
+          "rain_skip_mm": "Rain skip threshold (mm forecast)",
+          "weather_entity": "Weather entity for forecast (optional)"
         },
         "data_description": {
           "temperature": "Current outdoor temperature — an instantaneous value, NOT a daily min/max sensor.",
@@ -31,7 +35,11 @@
           "pressure": "Absolute (station) pressure — NOT the relative/sea-level value.",
           "rain": "Rain amount. For mode 'Cumulative (resets daily)' pick a daily rain counter.",
           "import_history": "On setup, prefill the last X days as ET0 history from the recorder (as far back as data exists). Runs ONLY once on setup; afterwards Home Assistant keeps the history itself.",
-          "history_days": "How many past days to import (0 = none)."
+          "history_days": "How many past days to import (0 = none).",
+          "auto_irrigate": "When on, Iriy decides daily per zone whether to water (zones with a valve only).",
+          "auto_hour": "Hour at which the decision is made (e.g. 4 = 04:00).",
+          "rain_skip_mm": "If at least this much rain is forecast for today, watering is postponed one day.",
+          "weather_entity": "Provides the daily rain forecast. Empty = first weather entity found."
         }
       }
     }
@@ -66,7 +74,11 @@
           "hourly": "Hourly live calculation",
           "update_minutes": "Update interval (min)",
           "import_history": "Import historical data",
-          "history_days": "Days back"
+          "history_days": "Days back",
+          "auto_irrigate": "Automation (water autonomously)",
+          "auto_hour": "Automation time (hour)",
+          "rain_skip_mm": "Rain skip threshold (mm forecast)",
+          "weather_entity": "Weather entity for forecast (optional)"
         },
         "data_description": {
           "temperature": "Current outdoor temperature — an instantaneous value, NOT a daily min/max sensor.",
@@ -76,7 +88,11 @@
           "pressure": "Absolute (station) pressure — NOT the relative/sea-level value.",
           "rain": "Rain amount. For mode 'Cumulative (resets daily)' pick a daily rain counter.",
           "import_history": "Only relevant on first setup: prefill the last X days once. Afterwards Home Assistant keeps the history itself.",
-          "history_days": "How many past days to import (0 = none)."
+          "history_days": "How many past days to import (0 = none).",
+          "auto_irrigate": "When on, Iriy decides daily per zone whether to water (zones with a valve only).",
+          "auto_hour": "Hour at which the decision is made (e.g. 4 = 04:00).",
+          "rain_skip_mm": "If at least this much rain is forecast for today, watering is postponed one day.",
+          "weather_entity": "Provides the daily rain forecast. Empty = first weather entity found."
         }
       },
       "add_zone": {
@@ -86,7 +102,10 @@
           "kc": "Crop coefficient Kc",
           "throughput": "Emitter rate (mm/h)",
           "efficiency": "Irrigation efficiency (0–1)",
-          "max_deficit": "Max deficit (mm)"
+          "max_deficit": "Max deficit (mm)",
+          "interval_days": "Water at least every … days",
+          "trigger": "Watering threshold (0 = ⅔ max deficit)",
+          "trigger_unit": "Threshold unit"
         }
       },
       "edit_zone": {
@@ -99,7 +118,10 @@
           "kc": "Crop coefficient Kc",
           "throughput": "Emitter rate (mm/h)",
           "efficiency": "Irrigation efficiency (0–1)",
-          "max_deficit": "Max deficit (mm)"
+          "max_deficit": "Max deficit (mm)",
+          "interval_days": "Water at least every … days",
+          "trigger": "Watering threshold (0 = ⅔ max deficit)",
+          "trigger_unit": "Threshold unit"
         }
       },
       "remove_zone": {
@@ -149,6 +171,12 @@
         "cumulative_daily": "Cumulative counter (resets daily)",
         "incremental": "Incremental (mm per report)",
         "rate": "Rate (mm/h)"
+      }
+    },
+    "trigger_unit": {
+      "options": {
+        "mm": "mm (deficit)",
+        "L": "L (over area)"
       }
     }
   }

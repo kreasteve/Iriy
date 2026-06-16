@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
@@ -36,6 +36,9 @@ import homeassistant.util.dt as dt_util
 
 from . import et
 from .const import (
+    AUTO_MIN_DEFICIT_MM,
+    CONF_AUTO_HOUR,
+    CONF_AUTO_IRRIGATE,
     CONF_ELEVATION,
     CONF_HISTORY_DAYS,
     CONF_HOURLY,
@@ -47,9 +50,11 @@ from .const import (
     CONF_PRESSURE_UNIT,
     CONF_RAIN,
     CONF_RAIN_MODE,
+    CONF_RAIN_SKIP_MM,
     CONF_SOLAR,
     CONF_TEMP,
     CONF_UPDATE_MINUTES,
+    CONF_WEATHER_ENTITY,
     CONF_WIND,
     CONF_WIND_HEIGHT,
     CONF_WIND_UNIT,
@@ -57,23 +62,32 @@ from .const import (
     CONF_ZONE_BY_AREA,
     CONF_ZONE_CALC_LITERS,
     CONF_ZONE_EFFICIENCY,
+    CONF_ZONE_INTERVAL_DAYS,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
+    CONF_ZONE_TRIGGER,
+    CONF_ZONE_TRIGGER_UNIT,
     CONF_ZONE_VALVE,
     CONF_ZONES,
     DEFAULT_Z2M_BASE_TOPIC,
+    DEFAULT_AUTO_HOUR,
+    DEFAULT_AUTO_IRRIGATE,
     DEFAULT_BACKFILL_DAYS,
     DEFAULT_EFFICIENCY,
     DEFAULT_ELEVATION,
     DEFAULT_HOURLY,
     DEFAULT_IMPORT_HISTORY,
+    DEFAULT_INTERVAL_DAYS,
     DEFAULT_LATITUDE,
     DEFAULT_LONGITUDE,
     DEFAULT_MAX_DEFICIT,
     DEFAULT_PRESSURE_UNIT,
     DEFAULT_RAIN_MODE,
+    DEFAULT_RAIN_SKIP_MM,
+    DEFAULT_TRIGGER_FRACTION,
+    DEFAULT_TRIGGER_UNIT,
     DEFAULT_THROUGHPUT,
     DEFAULT_UPDATE_MINUTES,
     DEFAULT_WIND_HEIGHT,
@@ -157,10 +171,29 @@ class ZoneState:
     by_area: bool = False         # True: nur Liter ueber Flaeche, KEINE Laufzeit
     calc_liters: bool = False     # True: Menge RECHNEN (Modell) statt vom Ventil messen
     valve: str | None = None      # switch-Entity des Ventils (z2m), optional
+    interval_days: int = 0        # spaetestens alle N Tage giessen (0 = nur Schwelle)
+    trigger: float = 0.0          # Gieß-Schwelle (0 = Default aus max_deficit)
+    trigger_unit: str = "mm"      # Einheit der Schwelle: "mm" | "L"
     deficit: float = 0.0          # aktuelles Wasserdefizit [mm]
     etc_today: float = 0.0        # Pflanzenbedarf heute [mm]
     last_etc: float = 0.0         # Bedarf im letzten Intervall [mm]
     gegossen_l: float = 0.0       # heute ausgebracht [L] (vom Ventil gemessen)
+    committed_mm: float = 0.0     # heute von der Automatik schon abgezogene Netto-mm
+    last_watered: str | None = None  # ISO-Datum des letzten Giessens (Intervall-Uhr)
+
+    @property
+    def trigger_mm(self) -> float:
+        """Gieß-Schwelle in mm Defizit (gemeinsame Einheit der Bilanz).
+
+        Eingabe in Litern wird ueber die Flaeche in mm umgerechnet (1 mm = 1 L/m2,
+        Netto an der Pflanze). Ohne gesetzte Schwelle: Anteil vom Max-Defizit.
+        """
+        if self.trigger and self.trigger > 0:
+            if self.trigger_unit == "L" and self.area > 0:
+                eff = self.efficiency if self.efficiency > 0 else 1.0
+                return (self.trigger / self.area) * eff
+            return self.trigger  # mm (oder L ohne Flaeche -> als mm behandeln)
+        return self.max_deficit * DEFAULT_TRIGGER_FRACTION
 
     @property
     def runtime_minutes(self) -> float | None:
@@ -247,6 +280,12 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._pressure_unit = self._opt(CONF_PRESSURE_UNIT, DEFAULT_PRESSURE_UNIT)
         self._rain_mode = self._opt(CONF_RAIN_MODE, DEFAULT_RAIN_MODE)
 
+        # Automatik
+        self._auto = bool(self._opt(CONF_AUTO_IRRIGATE, DEFAULT_AUTO_IRRIGATE))
+        self._auto_hour = int(self._opt(CONF_AUTO_HOUR, DEFAULT_AUTO_HOUR))
+        self._rain_skip = float(self._opt(CONF_RAIN_SKIP_MM, DEFAULT_RAIN_SKIP_MM))
+        self._weather = self._opt(CONF_WEATHER_ENTITY) or None
+
         # Akkumulatoren: einer pro Spur (Tag bleibt bis Mitternacht, Intervall
         # wird nach jedem Tick geleert).
         self._day = {k: _Acc() for k in ("temp", "rh", "wind", "solar", "pressure")}
@@ -298,6 +337,16 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         return self._loaded_existing
 
     @property
+    def auto_settings(self) -> dict:
+        """Automatik-Konfiguration fuer das Panel (Anzeige)."""
+        return {
+            "enabled": self._auto,
+            "hour": self._auto_hour,
+            "rain_skip_mm": self._rain_skip,
+            "weather_entity": self._auto_weather_entity(),
+        }
+
+    @property
     def import_history(self) -> bool:
         return self._import_history
 
@@ -315,6 +364,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     def _build_zones(self) -> None:
         existing = {n: z.deficit for n, z in self.zones.items()}
+        last_w = {n: z.last_watered for n, z in self.zones.items()}
         self.zones = {}
         for raw in self._opt(CONF_ZONES, []) or []:
             name = raw[CONF_ZONE_NAME]
@@ -328,7 +378,11 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 by_area=bool(raw.get(CONF_ZONE_BY_AREA, False)),
                 calc_liters=bool(raw.get(CONF_ZONE_CALC_LITERS, False)),
                 valve=raw.get(CONF_ZONE_VALVE) or None,
+                interval_days=int(raw.get(CONF_ZONE_INTERVAL_DAYS, 0) or 0),
+                trigger=float(raw.get(CONF_ZONE_TRIGGER, 0.0) or 0.0),
+                trigger_unit=str(raw.get(CONF_ZONE_TRIGGER_UNIT, DEFAULT_TRIGGER_UNIT)),
                 deficit=existing.get(name, 0.0),
+                last_watered=last_w.get(name),
             )
             self.zones[name] = zone
 
@@ -361,6 +415,16 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 self.hass, self._handle_midnight, hour=0, minute=0, second=5
             )
         )
+        # Automatik: zur eingestellten Stunde je Zone ueber Giessen entscheiden.
+        # Bewusst NACH dem Tageswechsel (00:00) – mit frischem Defizit. Default AUS.
+        if self._auto:
+            hour = min(23, max(0, self._auto_hour))
+            self._unsubs.append(
+                async_track_time_change(
+                    self.hass, self._handle_auto_irrigate, hour=hour, minute=0, second=30
+                )
+            )
+            _LOGGER.info("Iriy: Automatik aktiv – taeglich %02d:00 Uhr", hour)
         # Frische Einrichtung: Tagesbilanz aus der Recorder-History aufbauen,
         # damit sofort sinnvolle Werte da sind statt erst ab morgen.
         if not self._loaded_existing:
@@ -1007,15 +1071,132 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             return None
         return f"{DEFAULT_Z2M_BASE_TOPIC}/{name}/set"
 
+    # --- Automatik ------------------------------------------------------
+
+    @callback
+    def _handle_auto_irrigate(self, now: datetime) -> None:
+        self.hass.async_create_task(self._async_auto_irrigate(now))
+
+    def _auto_weather_entity(self) -> str | None:
+        """Konfiguriertes Wetter-Entity oder – falls keins gesetzt – das erste
+        verfuegbare weather.*-Entity (Auto-Erkennung)."""
+        if self._weather:
+            return self._weather
+        ids = list(self.hass.states.async_entity_ids("weather"))
+        return ids[0] if ids else None
+
+    async def _forecast_today_rain(self) -> float | None:
+        """Vorhergesagter Tagesregen [mm] fuer HEUTE aus dem Wetter-Entity.
+
+        None, wenn kein Entity/keine Vorhersage verfuegbar ist (-> Forecast-Sperre
+        greift dann nicht, es wird normal nach Defizit entschieden).
+        """
+        eid = self._auto_weather_entity()
+        if not eid:
+            return None
+        try:
+            resp = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"type": "daily", "entity_id": eid},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Iriy: Forecast-Abruf (%s) fehlgeschlagen: %s", eid, err)
+            return None
+        forecasts = ((resp or {}).get(eid, {}) or {}).get("forecast") or []
+        if not forecasts:
+            return None
+        today = dt_util.now().date()
+        chosen = None
+        for f in forecasts:
+            dt_str = f.get("datetime")
+            fdate = dt_util.parse_datetime(dt_str) if dt_str else None
+            if fdate is not None and dt_util.as_local(fdate).date() == today:
+                chosen = f
+                break
+        if chosen is None:
+            chosen = forecasts[0]  # naechster verfuegbarer Tag als Naeherung
+        precip = chosen.get("precipitation")
+        try:
+            return float(precip) if precip is not None else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    async def _async_auto_irrigate(self, now: datetime | None = None) -> None:
+        """Automatik (HYBRID) – pro Zone mit Ventil entscheiden:
+
+        Giessen, wenn Defizit >= Gieß-Schwelle ODER seit >= interval_days nicht
+        mehr gegossen wurde – sofern das Defizit ueberhaupt nennenswert ist
+        (>= AUTO_MIN_DEFICIT_MM). Ist heute Regen >= rain_skip vorhergesagt, wird
+        um einen Tag verschoben und in der Tabelle als "fc_rain" vermerkt. Erreicht
+        das Defizit den Max-Wert (Welkepunkt), wird IMMER gegossen (Forecast egal).
+        """
+        if not self._auto:
+            return
+        today = (now or dt_util.now()).date()
+        today_iso = today.isoformat()
+        rain_fc = await self._forecast_today_rain()
+        for zone in self.zones.values():
+            if not zone.valve:
+                continue
+            deficit = zone.deficit
+            emergency = deficit >= zone.max_deficit
+            if deficit < AUTO_MIN_DEFICIT_MM and not emergency:
+                continue
+            days_since = 999
+            if zone.last_watered:
+                try:
+                    days_since = (today - date.fromisoformat(zone.last_watered)).days
+                except ValueError:
+                    days_since = 999
+            due_threshold = deficit >= zone.trigger_mm
+            due_interval = zone.interval_days > 0 and days_since >= zone.interval_days
+            if not (due_threshold or due_interval or emergency):
+                continue
+            if not emergency and rain_fc is not None and rain_fc >= self._rain_skip:
+                rec = self.zone_recent.setdefault(zone.name, {}).setdefault(
+                    today_iso, {}
+                )
+                rec["note"] = "fc_rain"
+                rec["fc_rain_mm"] = round(rain_fc, 1)
+                _LOGGER.info(
+                    "Iriy: Zone %s verschoben – Vorhersage %.1f mm Regen heute",
+                    zone.name,
+                    rain_fc,
+                )
+                continue
+            _LOGGER.info(
+                "Iriy: Automatik giesst Zone %s (Defizit %.1f mm, Schwelle %.1f mm, "
+                "Tage seit Giessen %s/%s%s)",
+                zone.name,
+                deficit,
+                zone.trigger_mm,
+                days_since,
+                zone.interval_days or "-",
+                ", NOTFALL>=max" if emergency else "",
+            )
+            await self.async_irrigate_zone(zone.name, commit=True)
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+
     async def async_irrigate_zone(
-        self, zone_name: str, amount: float | None = None
+        self, zone_name: str, amount: float | None = None, commit: bool = False
     ) -> None:
-        """Gieszvorgang am Ventil der Zone ausloesen (benutzer-initiiert).
+        """Gieszvorgang am Ventil der Zone ausloesen.
 
         Liter-Zone (Flaeche) -> quantitative (irrigation_capacity = Liter).
         Zeit-Zone -> timed (irrigation_duration = Sekunden). Das Ventil giesst
         autonom und schliesst selbst. amount ueberschreibt die Menge (L) bzw.
         Zeit (min) je nach Zonen-Typ.
+
+        commit=True (Automatik): zieht die kommandierten Netto-mm SOFORT vom
+        Defizit ab und merkt sie als committed_mm vor. Die naechtliche
+        Konsolidierung zieht dann nur die DARUEBER hinaus gemessene (z. B.
+        manuelle) Menge ab – kein Doppelzaehlen, aber auch kein taegliches
+        Nachgiessen, falls der Durchflussmesser zu wenig meldet. Bei manueller
+        Ausloesung (commit=False) bleibt es beim alten Verhalten: nur naechtlich.
         """
         zone = self.zones.get(zone_name)
         if zone is None or not zone.valve:
@@ -1098,6 +1279,13 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # Live-"heute"-Anzeige des von Iriy Kommandierten.
         if applied_l is not None:
             zone.gegossen_l += applied_l
+        # Automatik: kommandierte Netto-mm sofort verbuchen (verhindert taegliches
+        # Nachgiessen, wenn die naechtliche Ventil-Messung zu wenig meldet).
+        if commit and applied_mm:
+            zone.deficit = max(zone.deficit - applied_mm, 0.0)
+            zone.committed_mm += applied_mm
+        # Intervall-Uhr der Automatik zuruecksetzen (zaehlt ab letztem Giessen).
+        zone.last_watered = dt_util.now().date().isoformat()
 
         # Nach dem Lauf binaer pruefen, ob ueberhaupt Wasser floss (flow > 0).
         run_start = dt_util.utcnow()
@@ -1224,11 +1412,18 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             liters, _flowed = await self._watered_for_day(zone, day_start, day_end)
             if liters > 0 and zone.area > 0:
                 eff = zone.efficiency if zone.efficiency > 0 else 1.0
-                zone.deficit = max(zone.deficit - (liters / zone.area) * eff, 0.0)
-            self.zone_recent.setdefault(zone.name, {})[ended_iso] = {
-                "deficit": round(zone.deficit, 2),
-                "gegossen_l": liters,
-            }
+                measured_mm = (liters / zone.area) * eff
+                # Nur die UEBER das von der Automatik bereits Verbuchte hinaus
+                # gemessene Menge abziehen (manuelle Top-ups) – kein Doppelzaehlen.
+                extra_mm = max(measured_mm - zone.committed_mm, 0.0)
+                zone.deficit = max(zone.deficit - extra_mm, 0.0)
+            if liters > 0:
+                zone.last_watered = ended_iso  # Intervall-Uhr (erfasst manuell + Iriy)
+            zone.committed_mm = 0.0  # Tag abgeschlossen -> Vormerkung zuruecksetzen
+            # Vorhandenen Vermerk (z. B. "fc_rain") erhalten, Bilanz aktualisieren.
+            rec = self.zone_recent.setdefault(zone.name, {}).setdefault(ended_iso, {})
+            rec["deficit"] = round(zone.deficit, 2)
+            rec["gegossen_l"] = liters
         self._trim_recent()
         await self._async_save()
         self.async_set_updated_data(self._snapshot())
@@ -1256,7 +1451,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
     async def async_backfill_rain_history(self, days: int = 10) -> None:
         """Rueckwirkend den Tagesregen (mm) je Tag in die Tabelle holen und danach
         die Defizit-Historie rekonstruieren. Regen aus dem konfigurierten Sensor:
-        cumulative_daily -> Tagesmaximum; incremental -> Summe; rate -> uebersprungen.
+        cumulative_daily -> Tagesmaximum; incremental -> Summe; rate -> Integration
+        der mm/h ueber den Tag.
         """
         rain_eid = self._src.get(CONF_RAIN)
         if rain_eid:
@@ -1540,6 +1736,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 zone.deficit = float(zd.get("deficit", 0.0))
                 zone.etc_today = float(zd.get("etc_today", 0.0))
                 zone.gegossen_l = float(zd.get("gegossen_l", 0.0))
+                zone.committed_mm = float(zd.get("committed_mm", 0.0))
+                zone.last_watered = zd.get("last_watered")
             else:  # altes Format: nur Defizit als Zahl
                 zone.deficit = float(zd)
 
@@ -1565,6 +1763,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             for zone in self.zones.values():
                 zone.etc_today = 0.0
                 zone.gegossen_l = 0.0  # neuer Tag waehrend HA aus
+                zone.committed_mm = 0.0
             self._current_day = today
 
     async def _async_save(self) -> None:
@@ -1587,6 +1786,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                         "deficit": z.deficit,
                         "etc_today": z.etc_today,
                         "gegossen_l": z.gegossen_l,
+                        "committed_mm": z.committed_mm,
+                        "last_watered": z.last_watered,
                     }
                     for n, z in self.zones.items()
                 },

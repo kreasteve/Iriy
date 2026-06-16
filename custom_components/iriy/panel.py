@@ -27,16 +27,21 @@ from .const import (
     CONF_ZONE_BY_AREA,
     CONF_ZONE_CALC_LITERS,
     CONF_ZONE_EFFICIENCY,
+    CONF_ZONE_INTERVAL_DAYS,
     CONF_ZONE_KC,
     CONF_ZONE_MAX_DEFICIT,
     CONF_ZONE_NAME,
     CONF_ZONE_THROUGHPUT,
+    CONF_ZONE_TRIGGER,
+    CONF_ZONE_TRIGGER_UNIT,
     CONF_ZONE_VALVE,
     CONF_ZONES,
     DEFAULT_EFFICIENCY,
+    DEFAULT_INTERVAL_DAYS,
     DEFAULT_KC,
     DEFAULT_MAX_DEFICIT,
     DEFAULT_THROUGHPUT,
+    DEFAULT_TRIGGER_UNIT,
     DOMAIN,
 )
 from .coordinator import IriyCoordinator
@@ -130,6 +135,11 @@ def _instance_zones(coord: IriyCoordinator) -> list[dict]:
                 "by_area": zone.by_area,
                 "calc_liters": zone.calc_liters,
                 "valve": zone.valve,
+                "interval_days": zone.interval_days,
+                "trigger": zone.trigger,
+                "trigger_unit": zone.trigger_unit,
+                "trigger_mm": round(zone.trigger_mm, 1),
+                "last_watered": zone.last_watered,
                 "deficit": round(zone.deficit, 2),
                 "etc_today": round(zone.etc_today, 2),
                 "runtime_minutes": zone.runtime_minutes,
@@ -178,6 +188,7 @@ async def ws_overview(
                 "rain_today": round(d.diagnostics.get("rain_today_mm", 0.0), 1)
                 if d.diagnostics
                 else None,
+                "auto": coord.auto_settings,
                 "zones": _instance_zones(coord),
             }
         )
@@ -246,6 +257,12 @@ async def ws_zone_save(
     }
     zone[CONF_ZONE_BY_AREA] = bool(zone_in.get(CONF_ZONE_BY_AREA))
     zone[CONF_ZONE_CALC_LITERS] = bool(zone_in.get(CONF_ZONE_CALC_LITERS))
+    zone[CONF_ZONE_INTERVAL_DAYS] = int(
+        _f(zone_in.get(CONF_ZONE_INTERVAL_DAYS), DEFAULT_INTERVAL_DAYS)
+    )
+    zone[CONF_ZONE_TRIGGER] = _f(zone_in.get(CONF_ZONE_TRIGGER), 0.0)
+    unit = str(zone_in.get(CONF_ZONE_TRIGGER_UNIT) or DEFAULT_TRIGGER_UNIT)
+    zone[CONF_ZONE_TRIGGER_UNIT] = unit if unit in ("mm", "L") else DEFAULT_TRIGGER_UNIT
     area = zone_in.get(CONF_ZONE_AREA)
     if area not in (None, ""):
         zone[CONF_ZONE_AREA] = _f(area, 0.0)
