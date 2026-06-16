@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_state_change_event,
     async_track_time_change,
 )
@@ -63,7 +64,6 @@ from .const import (
     CONF_ZONE_VALVE,
     CONF_ZONES,
     DEFAULT_Z2M_BASE_TOPIC,
-    VALVE_VOLUME_SUFFIX,
     DEFAULT_BACKFILL_DAYS,
     DEFAULT_EFFICIENCY,
     DEFAULT_ELEVATION,
@@ -267,8 +267,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # Parallele Tages-Logs fuer die Tabelle (ISO-Datum -> Wert), persistiert.
         self.rain_recent: dict[str, float] = {}           # Regen [mm] je Tag
         self.zone_recent: dict[str, dict[str, dict]] = {}  # zone -> {datum: {...}}
-        # Letzter gemessener Ventil-Volumenstand je Zone [L] (fuer Delta -> Defizit).
-        self._valve_base: dict[str, float] = {}
         self.et0_today = 0.0
         self.et0_rate: float | None = None
         self._last_tick: datetime | None = None
@@ -874,8 +872,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         # neustart-robust, bei jedem Tick frisch (nicht erst nach 2 Intervallen).
         if self._hourly:
             self.et0_rate = self._instant_rate()
-        # Gemessenes Ventil-Volumen verbuchen (Defizit selbstkorrigierend).
-        self._read_valve_volumes()
+        # (Defizit/gegossen kommen jetzt aus der Flow-Verifikation nach jedem
+        # Lauf bzw. aus dem Kommando – nicht mehr aus dem driftenden Tageszaehler.)
         self._reset_interval()
         await self._async_save()
         return self._snapshot()
@@ -980,9 +978,8 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
 
     # --- Ventile (z2m GiEX/Tuya) ---------------------------------------
 
-    def _valve_volume_entity(self, valve: str) -> str | None:
-        """Den taeglichen Volumen-Mess-Sensor am selben Geraet wie der
-        Ventil-Switch finden (…_daily_irrigation_volume)."""
+    def _flow_entity(self, valve: str) -> str | None:
+        """Den flow-Sensor (m³/h) am selben Geraet wie der Ventil-Switch finden."""
         from homeassistant.helpers import entity_registry as er
 
         reg = er.async_get(self.hass)
@@ -990,9 +987,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         if ent is None or ent.device_id is None:
             return None
         for e in reg.entities.values():
-            if e.device_id == ent.device_id and e.entity_id.endswith(
-                VALVE_VOLUME_SUFFIX
-            ):
+            if e.device_id == ent.device_id and e.entity_id.endswith("_flow"):
                 return e.entity_id
         return None
 
@@ -1011,47 +1006,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         if not name:
             return None
         return f"{DEFAULT_Z2M_BASE_TOPIC}/{name}/set"
-
-    def _read_valve_volumes(self) -> None:
-        """Gemessenes Tagesvolumen je Zone lesen und das Defizit
-        selbstkorrigierend verbuchen (Delta seit letztem Stand / Flaeche).
-
-        Geht vom GEMESSENEN Wert aus -> faengt auch manuelles Gieszen. Nur fuer
-        Zonen mit Flaeche (sonst keine L->mm-Umrechnung moeglich).
-        """
-        for zone in self.zones.values():
-            if not zone.valve or zone.calc_liters:
-                continue  # calc_liters: Menge wird gerechnet, nicht gemessen
-            vol_eid = self._valve_volume_entity(zone.valve)
-            if not vol_eid:
-                continue
-            st = self.hass.states.get(vol_eid)
-            if st is None or str(st.state).lower() in _INVALID_STATES:
-                continue
-            try:
-                cur = float(st.state)
-            except (ValueError, TypeError):
-                continue
-            base = self._valve_base.get(zone.name)
-            self._valve_base[zone.name] = cur
-            # Anzeige "heute gegossen" = Tages-Maximum des Geraete-Zaehlers
-            # (monoton steigend bis zum taeglichen Reset) -> zeigt das echte
-            # Tagesvolumen und ist robust gegen Reset-/Snapshot-Timing.
-            zone.gegossen_l = max(zone.gegossen_l, cur)
-            if base is None:
-                continue
-            # Sensor-Tagesreset abfangen (faellt cur unter base -> neuer Tag).
-            delta = cur - base if cur >= base else cur
-            if delta <= 0:
-                continue
-            # Defizit selbstkorrigierend: ausgebrachte BRUTTO-Liter -> NETTO-mm
-            # an der Pflanze (x Wirkungsgrad), dann abziehen. Konsistent zu
-            # liters_needed = Defizit*Flaeche/Wirkungsgrad. Nur mit Flaeche
-            # moeglich (L->mm); Zeit-Zonen ohne Flaeche korrigieren NICHT aus der
-            # Messung (dort schaetzt async_irrigate_zone beim Kommandieren).
-            if zone.area > 0:
-                eff = zone.efficiency if zone.efficiency > 0 else 1.0
-                zone.deficit = max(zone.deficit - (delta / zone.area) * eff, 0.0)
 
     async def async_irrigate_zone(
         self, zone_name: str, amount: float | None = None
@@ -1102,6 +1056,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             applied_l = liters
             if zone.area > 0:
                 applied_mm = (liters / zone.area) * eff
+            run_window_s = max(liters * 6.0, 120.0) + 120.0  # grosszuegig
         else:
             # Zeit-Steuerung -> timed (auch wenn eine Flaeche gesetzt ist, z. B.
             # Tropfschlauch: gesteuert wird ueber die Laufzeit, nicht die Menge).
@@ -1128,6 +1083,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             applied_mm = zone.throughput * (minutes / 60.0) * eff
             if zone.area > 0:
                 applied_l = zone.throughput * (minutes / 60.0) * zone.area
+            run_window_s = minutes * 60.0 + 120.0
 
         await self.hass.services.async_call(
             "mqtt",
@@ -1138,13 +1094,93 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         _LOGGER.info("Iriy: Gieszen Zone %s -> %s %s", zone_name, topic, payload)
         # Verbuchung: GERECHNET, wenn calc_liters gesetzt ist oder keine Messung
         # moeglich (keine Flaeche, z. B. unzuverlaessiger Durchflussmesser am
-        # Tropfschlauch). Sonst kommt Defizit/gegossen aus dem gemessenen
-        # Ventil-Volumen (_read_valve_volumes).
+        # Tropfschlauch). Bei GEMESSENEN Zonen kommt Defizit/gegossen aus dem
+        # Flow-Integral der Verifikation unten (nicht aus dem kommandierten Wert).
         if zone.calc_liters or zone.area <= 0:
             if applied_mm:
                 zone.deficit = max(zone.deficit - applied_mm, 0.0)
             if applied_l is not None:
                 zone.gegossen_l += applied_l
+
+        # Nach dem Lauf per flow-Sensor verifizieren, ob wirklich Wasser kam.
+        # Gemessene Zonen (Amberbaum): echte Liter aus dem Flow-Integral verbuchen.
+        # calc_liters-Zonen (Tropfschlauch): nur pruefen, ob flow>0 (sonst Warnung).
+        run_start = dt_util.utcnow()
+        measured = not zone.calc_liters and zone.area > 0
+
+        @callback
+        def _verify_later(_now, zn=zone_name, rs=run_start, win=run_window_s, meas=measured):
+            self.hass.async_create_task(self._verify_run(zn, rs, win, meas))
+
+        async_call_later(self.hass, run_window_s, _verify_later)
+        await self._async_save()
+        self.async_set_updated_data(self._snapshot())
+
+    async def _verify_run(
+        self, zone_name: str, run_start: datetime, window_s: float, measured: bool
+    ) -> None:
+        """Nach einem Giess-Lauf den flow-Sensor ueber [run_start, +window] aus
+        dem Recorder integrieren: liefert die ausgebrachten Liter (zeit-gewichtet)
+        und ob ueberhaupt Fluss war. Bei gemessenen Zonen Defizit/gegossen daraus
+        verbuchen; sonst nur „kein Fluss"-Warnung.
+        """
+        zone = self.zones.get(zone_name)
+        if zone is None or not zone.valve:
+            return
+        flow_eid = self._flow_entity(zone.valve)
+        if not flow_eid:
+            _LOGGER.debug("Iriy: kein flow-Sensor fuer %s", zone.valve)
+            return
+        try:
+            from homeassistant.components.recorder import get_instance, history
+        except ImportError:
+            return
+        end = run_start + timedelta(seconds=window_s)
+        try:
+            data = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period,
+                self.hass,
+                run_start,
+                end,
+                flow_eid,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Iriy: Flow-Verifikation fehlgeschlagen: %s", err)
+            return
+        pts: list[tuple[datetime, float]] = []
+        for s in data.get(flow_eid, []):
+            try:
+                v = max(float(s.state), 0.0)  # m³/h
+            except (ValueError, TypeError):
+                v = 0.0
+            pts.append((s.last_changed, v))
+        liters = 0.0
+        flowed = False
+        for i, (t, v) in enumerate(pts):
+            t2 = pts[i + 1][0] if i + 1 < len(pts) else end
+            if t < run_start:
+                t = run_start
+            dt_h = max((t2 - t).total_seconds(), 0.0) / 3600.0
+            liters += v * dt_h * 1000.0  # m³/h * h * 1000 = L
+            if v > 0:
+                flowed = True
+        if measured:
+            eff = zone.efficiency if zone.efficiency > 0 else 1.0
+            zone.gegossen_l += round(liters, 1)
+            if zone.area > 0:
+                zone.deficit = max(zone.deficit - (liters / zone.area) * eff, 0.0)
+            _LOGGER.info(
+                "Iriy: Zone %s – Flow-Integral %.1f L (geflossen=%s)",
+                zone_name,
+                liters,
+                flowed,
+            )
+        if not flowed:
+            _LOGGER.warning(
+                "Iriy: Zone %s – KEIN Fluss im Giess-Fenster erkannt "
+                "(Hahn zu / Ventil-Problem?)",
+                zone_name,
+            )
         await self._async_save()
         self.async_set_updated_data(self._snapshot())
 
@@ -1200,7 +1236,7 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self._rain_day = 0.0
         for zone in self.zones.values():
             zone.etc_today = 0.0
-            zone.gegossen_l = 0.0  # neuer Tag; _read_valve_volumes fuellt neu
+            zone.gegossen_l = 0.0  # neuer Tag; Flow-Verifikation fuellt neu
         self._current_day = now.date().isoformat()
         self.hass.async_create_task(self._async_save())
         self.async_set_updated_data(self._snapshot())
@@ -1338,7 +1374,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
         self.zone_recent = {
             z: dict(v) for z, v in (data.get("zone_recent") or {}).items()
         }
-        self._valve_base = dict(data.get("valve_base") or {})
         self._rain_last = data.get("rain_last")
         self._history_imported = bool(data.get("history_imported", False))
         self._last_finalized_day = data.get("last_finalized_day")
@@ -1375,7 +1410,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
             for zone in self.zones.values():
                 zone.etc_today = 0.0
                 zone.gegossen_l = 0.0  # neuer Tag waehrend HA aus
-            self._valve_base = {}  # Volumen-Baseline neu setzen (Sensor reset)
             self._current_day = today
 
     async def _async_save(self) -> None:
@@ -1388,7 +1422,6 @@ class IriyCoordinator(DataUpdateCoordinator[IriyData]):
                 "et0_recent": self.et0_recent,
                 "rain_recent": self.rain_recent,
                 "zone_recent": self.zone_recent,
-                "valve_base": self._valve_base,
                 "et0_today": self.et0_today,
                 "et0_rate": self.et0_rate,
                 "rain_last": self._rain_last,
